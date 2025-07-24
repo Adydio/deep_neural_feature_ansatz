@@ -31,7 +31,7 @@ def split(trainset, p=.8):
 
 
 
-def get_svhn(split_percentage=.8, num_train=np.float('inf'), num_test=np.float('inf')):
+def get_svhn(split_percentage=.8, num_train=float('inf'), num_test=float('inf')):
 
     NUM_CLASSES = 10
     transform = transforms.Compose([transforms.ToTensor()])
@@ -40,7 +40,7 @@ def get_svhn(split_percentage=.8, num_train=np.float('inf'), num_test=np.float('
     trainset = torchvision.datasets.SVHN(root=svhn_path,
                                          split='train',
                                          transform=transform,
-                                         download=False)
+                                         download=True)
     trainset = one_hot_data(trainset, NUM_CLASSES, num_samples=num_train)
     trainset, valset = split(trainset, p=split_percentage)
 
@@ -53,7 +53,7 @@ def get_svhn(split_percentage=.8, num_train=np.float('inf'), num_test=np.float('
     testset = torchvision.datasets.SVHN(root=svhn_path,
                                         split='test',
                                         transform=transform,
-                                        download=False)
+                                        download=True)
 
     testset = one_hot_data(testset, NUM_CLASSES, num_samples=num_test)
 
@@ -65,7 +65,7 @@ def get_svhn(split_percentage=.8, num_train=np.float('inf'), num_test=np.float('
     return trainloader, valloader, testloader
 
 
-def get_cifar(split_percentage=.8, num_train=np.float('inf'), num_test=np.float('inf')):
+def get_cifar(split_percentage=.8, num_train=float('inf'), num_test=float('inf')):
 
     NUM_CLASSES = 10
     transform = transforms.Compose([transforms.ToTensor()])
@@ -160,7 +160,7 @@ def celeba_subset(dataset, feature_idx, num_samples=-1):
 
 
 def get_celeba(feature_idx, split_percentage=.8,
-               num_train=np.float('inf'), num_test=np.float('inf')):
+               num_train=float('inf'), num_test=float('inf')):
     celeba_path = '~/datasets/'
     SIZE = 96
     transform = transforms.Compose(
@@ -239,8 +239,8 @@ def merge_data(cifar, mnist, n):
     return list(zip(merged_data, merged_labels))
 
 
-def get_cifar_mnist(split_percentage=.8, num_train_per_class=np.float('inf'),
-                    num_test_per_class=np.float('inf')):
+def get_cifar_mnist(split_percentage=.8, num_train_per_class=float('inf'),
+                    num_test_per_class=float('inf')):
 
         path = '~/datasets/'
         transform = transforms.Compose(
@@ -326,8 +326,8 @@ def one_hot_stl_toy(dataset, num_samples=-1):
 
 
 
-def get_stl_star(split_percentage=.8, num_train=np.float('inf'),
-                 num_test=np.float('inf')):
+def get_stl_star(split_percentage=.8, num_train=float('inf'),
+                 num_test=float('inf')):
     SIZE = 96
     transform = transforms.Compose(
         [transforms.Resize([SIZE, SIZE]),

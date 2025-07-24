@@ -1,4 +1,6 @@
+import os
 import torch
+torch.set_num_threads(8)
 from torch.autograd import Variable
 import torch.optim as optim
 import time
@@ -56,10 +58,11 @@ def train_network(train_loader, val_loader, test_loader, num_classes,
         torch.save(d, 'saved_nns/init_' + name + '.pth')
 
 
-    net.cuda()
+    device = torch.device('mps')  # 强制使用 Apple Silicon GPU (MPS)
+    net = net.to(device)
     best_val_acc = 0
     best_test_acc = 0
-    best_val_loss = np.float("inf")
+    best_val_loss = float("inf")
     best_test_loss = 0
 
     for i in range(num_epochs):
@@ -84,7 +87,8 @@ def train_network(train_loader, val_loader, test_loader, num_classes,
             d['state_dict'] = net.state_dict()
             if name is not None:
                 torch.save(d, 'saved_nns/' + name + '.pth')
-            net.cuda()
+            device = torch.device('cpu')
+            net.to(device)
 
         if val_loss <= best_val_loss:
             best_val_loss = val_loss
@@ -109,12 +113,16 @@ def train_step(net, optimizer, train_loader):
     train_loss = 0.
     num_batches = len(train_loader)
 
+    device = torch.device('mps')
+    net = net.to(device)
     for batch_idx, batch in enumerate(train_loader):
         optimizer.zero_grad()
         inputs, labels = batch
         targets = labels
-        output = net(Variable(inputs).cuda())
-        target = Variable(targets).cuda()
+        inputs = inputs.to(device)
+        targets = targets.to(device)
+        output = net(Variable(inputs))
+        target = Variable(targets)
         loss = torch.mean(torch.pow(output - target, 2))
         loss.backward()
         optimizer.step()
@@ -128,12 +136,16 @@ def train_step(net, optimizer, train_loader):
 def val_step(net, val_loader):
     net.eval()
     val_loss = 0.
+    device = torch.device('mps')
+    net = net.to(device)
     for batch_idx, batch in enumerate(val_loader):
         inputs, labels = batch
         targets = labels
+        inputs = inputs.to(device)
+        targets = targets.to(device)
         with torch.no_grad():
-            output = net(Variable(inputs).cuda())
-            target = Variable(targets).cuda()
+            output = net(Variable(inputs))
+            target = Variable(targets)
         loss = torch.mean(torch.pow(output - target, 2))
         val_loss += loss.cpu().data.numpy() * len(inputs)
     val_loss = val_loss / len(val_loader.dataset)
@@ -143,11 +155,15 @@ def val_step(net, val_loader):
 def get_acc(net, loader):
     net.eval()
     count = 0
+    device = torch.device('mps')
+    net = net.to(device)
     for batch_idx, batch in enumerate(loader):
         inputs, targets = batch
+        inputs = inputs.to(device)
+        targets = targets.to(device)
         with torch.no_grad():
-            output = net(Variable(inputs).cuda())
-            target = Variable(targets).cuda()
+            output = net(Variable(inputs))
+            target = Variable(targets)
 
         preds = torch.argmax(output, dim=-1)
         labels = torch.argmax(target, dim=-1)
@@ -161,11 +177,15 @@ def get_r2(net, loader):
     count = 0
     preds = []
     labels = []
+    device = torch.device('mps')
+    net = net.to(device)
     for batch_idx, batch in enumerate(loader):
         inputs, targets = batch
+        inputs = inputs.to(device)
+        targets = targets.to(device)
         with torch.no_grad():
-            output = net(Variable(inputs).cuda()).flatten().cpu().numpy()
-            target = Variable(targets).cuda().flatten().cpu().numpy()
+            output = net(Variable(inputs)).flatten().cpu().numpy()
+            target = Variable(targets).flatten().cpu().numpy()
             preds.append(output)
             labels.append(target)
     preds = np.concatenate(preds)

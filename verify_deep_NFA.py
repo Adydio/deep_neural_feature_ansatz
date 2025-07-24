@@ -170,6 +170,8 @@ def read_configs(path):
     tokens = path.strip().split(':')
     print(tokens)
     act_name = 'relu'
+    width = None
+    depth = None
     for idx, t in enumerate(tokens):
         if t == 'width':
             width = eval(tokens[idx+1])
@@ -177,7 +179,8 @@ def read_configs(path):
             depth = eval(tokens[idx+1])
         if t == 'act':
             act_name = tokens[idx+1]
-
+    if width is None or depth is None:
+        raise ValueError(f"width or depth not found in path: {path}")
     return width, depth, act_name
 
 
