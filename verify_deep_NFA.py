@@ -86,27 +86,24 @@ def load_init_nn(path, width, depth, dim, num_classes, layer_idx=0, act_name='re
 
 def get_layer_output(net, trainloader, layer_idx=0):
     net.eval()
-    device = get_best_device()
-    net = net.to(device)
     out = []
-    with torch.no_grad():
-        for idx, batch in enumerate(trainloader):
-            data, labels = batch
-            data = data.to(device)
-            if layer_idx == 0:
-                out.append(data)
-            elif layer_idx == 1:
-                o = neural_model.Nonlinearity()(net.first(data))
-                out.append(o)
-            elif layer_idx > 1:
-                o = net.first(data)
-                for l_idx, m in enumerate(net.middle):
-                    o = m(o)
-                    if l_idx + 1 == layer_idx:
-                        o = neural_model.Nonlinearity()(o)
-                        out.append(o)
-                        break
+    for idx, batch in enumerate(trainloader):
+        data, labels = batch
+        if layer_idx == 0:
+            out.append(data.cpu())
+        elif layer_idx == 1:
+            o = neural_model.Nonlinearity()(net.first(data))
+            out.append(o.cpu())
+        elif layer_idx > 1:
+            o = net.first(data)
+            for l_idx, m in enumerate(net.middle):
+                o = m(o)
+                if l_idx + 1 == layer_idx:
+                    o = neural_model.Nonlinearity()(o)
+                    out.append(o.cpu())
+                    break
     out = torch.cat(out, dim=0)
+    net.cpu()
     return out
 
 
@@ -135,33 +132,35 @@ def egop(net, dataset, centering=False):
     bs = 1000
     batches = torch.split(dataset, bs)
     net = net.to(device)
-    G = torch.zeros((net.middle[0].out_features, net.middle[0].out_features), device=device)
+    G = 0
 
     Js = []
-    with torch.no_grad():
-        for batch_idx, data in enumerate(batches):
-            data = data.to(device)
-            print("Computing Jacobian for batch: ", batch_idx, len(batches))
-            J = get_jacobian(net, data)
-            Js.append(J)
+    for batch_idx, data in enumerate(batches):
+        data = data.to(device)
+        print("Computing Jacobian for batch: ", batch_idx, len(batches))
+        J = get_jacobian(net, data)
+        Js.append(J.cpu())
+
+        # Optional for stopping EGOP computation early
+        #if batch_idx > 30:
+        #    break
     Js = torch.cat(Js, dim=-1)
     if centering:
-        J_mean = torch.mean(Js, dim=-1, keepdim=True)
+        J_mean = torch.mean(Js, dim=-1).unsqueeze(-1)
         Js = Js - J_mean
 
     Js = torch.transpose(Js, 2, 0)
     Js = torch.transpose(Js, 1, 2)
     print(Js.shape)
     batches = torch.split(Js, bs)
-    with torch.no_grad():
-        for batch_idx, J in enumerate(batches):
-            print(batch_idx, len(batches))
-            m, c, d = J.shape
-            J = J.to(device)
-            G += torch.einsum('mcd,mcD->dD', J, J)
-            del J
+    for batch_idx, J in enumerate(batches):
+        print(batch_idx, len(batches))
+        m, c, d = J.shape
+        J = J.to(device)
+        G += torch.einsum('mcd,mcD->dD', J, J).cpu()
+        del J
     G = G * 1/len(Js)
-    G = G.cpu()
+
     return G
 
 
