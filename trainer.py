@@ -72,47 +72,49 @@ def train_network(train_loader, val_loader, test_loader, num_classes,
     best_val_loss = float("inf")
     best_test_loss = 0
 
+    val_interval = configs.get('val_interval', 20)
     for i in range(num_epochs):
-
         train_loss = train_step(net, optimizer, train_loader)
-        val_loss = val_step(net, val_loader)
-        test_loss = val_step(net, test_loader)
-        if regression:
-            train_acc = get_r2(net, train_loader)
-            val_acc = get_r2(net, val_loader)
-            test_acc = get_r2(net, test_loader)
+        if (i % val_interval == 0) or (i == num_epochs - 1):
+            val_loss = val_step(net, val_loader)
+            test_loss = val_step(net, test_loader)
+            if regression:
+                train_acc = get_r2(net, train_loader)
+                val_acc = get_r2(net, val_loader)
+                test_acc = get_r2(net, test_loader)
+            else:
+                train_acc = get_acc(net, train_loader)
+                val_acc = get_acc(net, val_loader)
+                test_acc = get_acc(net, test_loader)
+
+            if val_acc >= best_val_acc:
+                best_val_acc = val_acc
+                best_test_acc = test_acc
+                net.cpu()
+                d = {}
+                d['state_dict'] = net.state_dict()
+                if name is not None:
+                    torch.save(d, 'saved_nns/' + name + '.pth')
+                device = torch.device('cpu')
+                net.to(device)
+
+            if val_loss <= best_val_loss:
+                best_val_loss = val_loss
+                best_test_loss = test_loss
+
+            print("Epoch: ", i,
+                  "Train Loss: ", train_loss, "Test Loss: ", test_loss,
+                  "Train Acc: ", train_acc, "Test Acc: ", test_acc,
+                  "Best Val Acc: ", best_val_acc, "Best Val Loss: ", best_val_loss,
+                  "Best Test Acc: ", best_test_acc, "Best Test Loss: ", best_test_loss)
         else:
-            train_acc = get_acc(net, train_loader)
-            val_acc = get_acc(net, val_loader)
-            test_acc = get_acc(net, test_loader)
-
-        if val_acc >= best_val_acc:
-            best_val_acc = val_acc
-            best_test_acc = test_acc
-            net.cpu()
-            d = {}
-            d['state_dict'] = net.state_dict()
-            if name is not None:
-                torch.save(d, 'saved_nns/' + name + '.pth')
-            device = torch.device('cpu')
-            net.to(device)
-
-        if val_loss <= best_val_loss:
-            best_val_loss = val_loss
-            best_test_loss = test_loss
-
-        print("Epoch: ", i,
-              "Train Loss: ", train_loss, "Test Loss: ", test_loss,
-              "Train Acc: ", train_acc, "Test Acc: ", test_acc,
-              "Best Val Acc: ", best_val_acc, "Best Val Loss: ", best_val_loss,
-              "Best Test Acc: ", best_test_acc, "Best Test Loss: ", best_test_loss)
+            print(f"Epoch: {i} Train Loss: {train_loss}")
 
     net.cpu()
-
     d = {}
     d['state_dict'] = net.state_dict()
     torch.save(d, 'saved_nns/' + name + '_final.pth')
-    return train_acc, best_val_acc, best_test_acc
+    return best_val_acc, best_test_acc
 
 def train_step(net, optimizer, train_loader):
     net.train()

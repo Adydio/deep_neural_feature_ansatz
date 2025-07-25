@@ -260,13 +260,25 @@ def verify_NFA(path, dataset_name, feature_idx=None, layer_idx=0):
 
     return init_correlation, centered_correlation, uncentered_correlation
 
-def main():
 
-    path = './saved_nns/svhn:num_epochs:500:learning_rate:0.1:weight_decay:0:init:default:optimizer:sgd:freeze:False:width:1024:depth:5:act:relu:nn.pth'  # Path to saved neural net model
-    idxs = [0, 1, 2, 3, 4] # Layers for which to compute EGOP
+import argparse
+
+def main():
+    parser = argparse.ArgumentParser(description='Verify Deep NFA')
+    parser.add_argument('--path', type=str, required=True,
+                        help='Path to saved neural net model')
+    parser.add_argument('--dataset', type=str, default='svhn',
+                        help='Dataset name (default: svhn)')
+    parser.add_argument('--layers', type=int, nargs='+', default=[0,1,2,3,4],
+                        help='Layer indices to compute EGOP (default: 0 1 2 3 4)')
+    args = parser.parse_args()
+
+    path = args.path
+    dataset_name = args.dataset
+    idxs = args.layers
     init, centered, uncentered = [], [], []
     for idx in idxs:
-        results = verify_NFA(path, 'svhn', layer_idx=idx)
+        results = verify_NFA(path, dataset_name, layer_idx=idx)
         i, c, u = results
         init.append(i.numpy().item())
         centered.append(c.numpy().item())
