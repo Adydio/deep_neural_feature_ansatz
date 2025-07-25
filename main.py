@@ -24,12 +24,13 @@ def main():
     parser = argparse.ArgumentParser(description='Train neural net with flexible validation interval and optimizer.')
     parser.add_argument('--val_interval', type=int, default=20, help='Validation interval (default: 20)')
     parser.add_argument('--optimizer', type=str, default='sgd', choices=['sgd', 'adam'], help='Optimizer (default: sgd)')
+    parser.add_argument('--learning_rate', type=float, default=0.1, help='Learning rate (default: 0.1)')
     args = parser.parse_args()
 
     # Pick configs to save model
     configs = {}
     configs['num_epochs'] = 500
-    configs['learning_rate'] = .1
+    configs['learning_rate'] = args.learning_rate
     configs['weight_decay'] = 0
     configs['init'] = 'default'
     configs['optimizer'] = args.optimizer
