@@ -1,3 +1,10 @@
+def get_best_device():
+    if torch.cuda.is_available():
+        return torch.device('cuda')
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        return torch.device('mps')
+    else:
+        return torch.device('cpu')
 import os
 import torch
 torch.set_num_threads(8)
@@ -58,7 +65,7 @@ def train_network(train_loader, val_loader, test_loader, num_classes,
         torch.save(d, 'saved_nns/init_' + name + '.pth')
 
 
-    device = torch.device('mps')  # 强制使用 Apple Silicon GPU (MPS)
+    device = get_best_device()
     net = net.to(device)
     best_val_acc = 0
     best_test_acc = 0
@@ -113,7 +120,7 @@ def train_step(net, optimizer, train_loader):
     train_loss = 0.
     num_batches = len(train_loader)
 
-    device = torch.device('mps')
+    device = get_best_device()
     net = net.to(device)
     for batch_idx, batch in enumerate(train_loader):
         optimizer.zero_grad()
@@ -136,7 +143,7 @@ def train_step(net, optimizer, train_loader):
 def val_step(net, val_loader):
     net.eval()
     val_loss = 0.
-    device = torch.device('mps')
+    device = get_best_device()
     net = net.to(device)
     for batch_idx, batch in enumerate(val_loader):
         inputs, labels = batch
@@ -155,7 +162,7 @@ def val_step(net, val_loader):
 def get_acc(net, loader):
     net.eval()
     count = 0
-    device = torch.device('mps')
+    device = get_best_device()
     net = net.to(device)
     for batch_idx, batch in enumerate(loader):
         inputs, targets = batch
@@ -177,7 +184,7 @@ def get_r2(net, loader):
     count = 0
     preds = []
     labels = []
-    device = torch.device('mps')
+    device = get_best_device()
     net = net.to(device)
     for batch_idx, batch in enumerate(loader):
         inputs, targets = batch

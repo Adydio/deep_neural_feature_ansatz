@@ -1,3 +1,11 @@
+def get_best_device():
+    import torch
+    if torch.cuda.is_available():
+        return torch.device('cuda')
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        return torch.device('mps')
+    else:
+        return torch.device('cpu')
 import numpy as np
 import torch
 import random
@@ -120,7 +128,7 @@ def get_jacobian(net, data):
 
 
 def egop(net, dataset, centering=False):
-    device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
+    device = get_best_device()
     bs = 1000
     batches = torch.split(dataset, bs)
     net = net.to(device)
