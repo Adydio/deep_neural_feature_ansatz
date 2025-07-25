@@ -30,7 +30,7 @@ def main():
     # Pick configs to save model
     configs = {}
     configs['num_epochs'] = 500
-    configs['learning_rate'] = args.learning_rate
+    configs['learning_rate'] = args.lr
     configs['weight_decay'] = 0
     configs['init'] = 'default'
     configs['optimizer'] = args.optimizer
