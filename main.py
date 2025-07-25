@@ -31,7 +31,7 @@ def main():
     configs['optimizer'] = 'sgd'
     configs['freeze'] = False
     configs['width'] = 1024
-    configs['depth'] = 3
+    configs['depth'] = 5
     configs['act'] = 'relu'
 
     # Code to load and train net on selected dataset.

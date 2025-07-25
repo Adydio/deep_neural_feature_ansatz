@@ -120,10 +120,10 @@ def get_jacobian(net, data):
 
 
 def egop(net, dataset, centering=False):
-    device = torch.device('cuda')
+    device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
     bs = 1000
     batches = torch.split(dataset, bs)
-    net = net.cuda()
+    net = net.to(device)
     G = 0
 
     Js = []
@@ -148,7 +148,7 @@ def egop(net, dataset, centering=False):
     for batch_idx, J in enumerate(batches):
         print(batch_idx, len(batches))
         m, c, d = J.shape
-        J = J.cuda()
+        J = J.to(device)
         G += torch.einsum('mcd,mcD->dD', J, J).cpu()
         del J
     G = G * 1/len(Js)
@@ -221,7 +221,7 @@ def verify_NFA(path, dataset_name, feature_idx=None, layer_idx=0):
 
     init_correlation = correlate(torch.from_numpy(M),
                                  torch.from_numpy(M0))
-
+ 
     print("Init Net Feature Matrix Correlation: " , init_correlation)
 
     if dataset_name == 'celeba':
@@ -229,7 +229,7 @@ def verify_NFA(path, dataset_name, feature_idx=None, layer_idx=0):
                                                                 num_train=20000,
                                                                 num_test=1)
     elif dataset_name == 'svhn':
-        trainloader, valloader, testloader = dataset.get_svhn(num_train=1000,
+        trainloader, valloader, testloader = dataset.get_svhn(num_train=100000,
                                                               num_test=1)
     elif dataset_name == 'cifar':
         trainloader, valloader, testloader = dataset.get_cifar(num_train=1000,
@@ -254,8 +254,8 @@ def verify_NFA(path, dataset_name, feature_idx=None, layer_idx=0):
 
 def main():
 
-    path = ''  # Path to saved neural net model
-    idxs = [0, 1, 2] # Layers for which to compute EGOP
+    path = './saved_nns/svhn:num_epochs:500:learning_rate:0.1:weight_decay:0:init:default:optimizer:sgd:freeze:False:width:1024:depth:5:act:relu:nn.pth'  # Path to saved neural net model
+    idxs = [0, 1, 2, 3, 4] # Layers for which to compute EGOP
     init, centered, uncentered = [], [], []
     for idx in idxs:
         results = verify_NFA(path, 'svhn', layer_idx=idx)
