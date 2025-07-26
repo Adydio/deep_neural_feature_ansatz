@@ -23,7 +23,7 @@ def get_name(dataset_name, configs):
 def main():
     parser = argparse.ArgumentParser(description='Train neural net with flexible validation interval and optimizer.')
     parser.add_argument('--val_interval', type=int, default=20, help='Validation interval (default: 20)')
-    parser.add_argument('--optimizer', type=str, default='sgd', choices=['sgd', 'adam'], help='Optimizer (default: sgd)')
+    parser.add_argument('--optimizer', type=str, default='sgd', choices=['sgd', 'adam', 'muon'], help='Optimizer (default: sgd)')
     parser.add_argument('--lr', type=float, default=0.1, help='Learning rate (default: 0.1)')
     args = parser.parse_args()
 
