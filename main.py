@@ -27,6 +27,16 @@ def main():
     parser.add_argument('--lr', type=float, default=0.1, help='Learning rate (default: 0.1)')
     args = parser.parse_args()
 
+    if args.optimizer == 'muon':
+        import torch.distributed as dist
+        import os
+        # Initialize the process group for a single-process run
+        if 'MASTER_ADDR' not in os.environ:
+            os.environ['MASTER_ADDR'] = 'localhost'
+        if 'MASTER_PORT' not in os.environ:
+            os.environ['MASTER_PORT'] = '29500'  # An arbitrary free port
+        dist.init_process_group(backend='gloo', rank=0, world_size=1)
+
     # Pick configs to save model
     configs = {}
     configs['num_epochs'] = 500
