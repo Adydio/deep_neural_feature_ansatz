@@ -5,7 +5,7 @@ def get_best_device():
         return torch.device('mps')
     else:
         return torch.device('cpu')
-import os
+from muon import Muon
 import torch
 torch.set_num_threads(8)
 from torch.autograd import Variable
@@ -21,6 +21,10 @@ def select_optimizer(name, lr, net, weight_decay):
         return torch.optim.SGD(net.parameters(), lr=lr, weight_decay=weight_decay)
     elif name == 'adam':
         return torch.optim.Adam(net.parameters(), lr=lr, weight_decay=weight_decay)
+    elif name == 'muon':
+        return Muon(net.parameters(), lr=lr, weight_decay=weight_decay, momentum=0.6)
+    else:
+        raise ValueError(f"Unknown optimizer: {name}")
 
 
 def train_network(train_loader, val_loader, test_loader, num_classes,
