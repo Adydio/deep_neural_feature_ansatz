@@ -5,10 +5,10 @@ def get_best_device():
         return torch.device('mps')
     else:
         return torch.device('cpu')
-# from muon import Muon
 
 import torch
-torch.set_num_threads(8)
+import torch.nn as nn
+import torch.nn.functional as F
 from torch.autograd import Variable
 import torch.optim as optim
 import time
@@ -24,7 +24,7 @@ def zeropower_via_newtonschulz5(G, steps=3, eps=1e-7):
     of minimizing steps, it turns out to be empirically effective to keep increasing the slope at
     zero even beyond the point where the iteration no longer converges all the way to one everywhere
     on the interval. This iteration therefore does not produce UV^T but rather something like US'V^T
-    where S' is diagonal with S_{ii}' \sim Uniform(0.5, 1.5), which turns out not to hurt model
+    where S' is diagonal with S_{ii}' ~ Uniform(0.5, 1.5), which turns out not to hurt model
     performance at all relative to UV^T, where USV^T = G is the SVD.
     """
     assert len(G.shape) == 2
@@ -73,15 +73,13 @@ class Muon(torch.optim.Optimizer):
                 p.data.add_(update, alpha=-lr) # take a step
 
 
-
 def select_optimizer(name, lr, net, weight_decay):
     if name == 'sgd':
         return torch.optim.SGD(net.parameters(), lr=lr, weight_decay=weight_decay)
     elif name == 'adam':
         return torch.optim.Adam(net.parameters(), lr=lr, weight_decay=weight_decay)
     elif name == 'muon':
-        params = [p for p in net.parameters() if p.requires_grad]
-        return Muon(params, lr=lr, momentum=0.6, nesterov=True)
+        return Muon(list(net.parameters()), lr=lr, momentum=0.6, nesterov=True)
     else:
         raise ValueError(f"Unknown optimizer: {name}")
 
@@ -112,7 +110,6 @@ def train_network(train_loader, val_loader, test_loader, num_classes,
                 if idx > 0:
                     param.requires_grad = False
 
-
         optimizer = select_optimizer(configs['optimizer'],
                                      configs['learning_rate'],
                                      net,
@@ -122,33 +119,47 @@ def train_network(train_loader, val_loader, test_loader, num_classes,
         net = neural_model.Net(dim, num_classes=num_classes)
         optimizer = torch.optim.Adam(net.parameters(), lr=1e-4)
 
+    # Get device and move model
+    device = get_best_device()
+    net = net.to(device)
+    
+    # For muon optimization, enable torch.compile
+    if configs and configs['optimizer'] == 'muon':
+        net = torch.compile(net, mode='reduce-overhead')
+    
+    # Use CrossEntropyLoss for classification
+    criterion = nn.CrossEntropyLoss()
+
     d = {}
     d['state_dict'] = net.state_dict()
     if name is not None:
         torch.save(d, 'saved_nns/init_' + name + '.pth')
 
-
-    device = get_best_device()
-    net = net.to(device)
     best_val_acc = 0
     best_test_acc = 0
     best_val_loss = float("inf")
     best_test_loss = 0
 
-    val_interval = configs.get('val_interval', 20)
+    val_interval = configs.get('val_interval', 20) if configs else 20
+    
+    # Use AMP for performance
+    scaler = torch.cuda.amp.GradScaler() if device.type == 'cuda' else None
+    
     for i in range(num_epochs):
-        train_loss = train_step(net, optimizer, train_loader)
+        train_loss = train_step(net, optimizer, train_loader, criterion, device, scaler)
+        
         if (i % val_interval == 0) or (i == num_epochs - 1):
-            val_loss = val_step(net, val_loader)
-            test_loss = val_step(net, test_loader)
+            val_loss = val_step(net, val_loader, criterion, device)
+            test_loss = val_step(net, test_loader, criterion, device)
+            
             if regression:
-                train_acc = get_r2(net, train_loader)
-                val_acc = get_r2(net, val_loader)
-                test_acc = get_r2(net, test_loader)
+                train_acc = get_r2(net, train_loader, device)
+                val_acc = get_r2(net, val_loader, device)
+                test_acc = get_r2(net, test_loader, device)
             else:
-                train_acc = get_acc(net, train_loader)
-                val_acc = get_acc(net, val_loader)
-                test_acc = get_acc(net, test_loader)
+                train_acc = get_acc(net, train_loader, device)
+                val_acc = get_acc(net, val_loader, device)
+                test_acc = get_acc(net, test_loader, device)
 
             if val_acc >= best_val_acc:
                 best_val_acc = val_acc
@@ -158,7 +169,6 @@ def train_network(train_loader, val_loader, test_loader, num_classes,
                 d['state_dict'] = net.state_dict()
                 if name is not None:
                     torch.save(d, 'saved_nns/' + name + '.pth')
-                device = torch.device('cpu')
                 net.to(device)
 
             if val_loss <= best_val_loss:
@@ -179,87 +189,97 @@ def train_network(train_loader, val_loader, test_loader, num_classes,
     torch.save(d, 'saved_nns/' + name + '_final.pth')
     return best_val_acc, best_test_acc
 
-def train_step(net, optimizer, train_loader):
+
+def train_step(net, optimizer, train_loader, criterion, device, scaler=None):
     net.train()
     start = time.time()
     train_loss = 0.
-    num_batches = len(train_loader)
-
-    device = get_best_device()
-    net = net.to(device)
+    
     for batch_idx, batch in enumerate(train_loader):
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
         inputs, labels = batch
-        targets = labels
         inputs = inputs.to(device)
-        targets = targets.to(device)
-        output = net(Variable(inputs))
-        target = Variable(targets)
-        loss = torch.mean(torch.pow(output - target, 2))
-        loss.backward()
-        optimizer.step()
-        train_loss += loss.cpu().data.numpy() * len(inputs)
+        labels = labels.to(device)
+        
+        if scaler and device.type == 'cuda':
+            with torch.cuda.amp.autocast():
+                output = net(inputs)
+                loss = criterion(output, labels)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            output = net(inputs)
+            loss = criterion(output, labels)
+            loss.backward()
+            optimizer.step()
+            
+        train_loss += loss.item() * len(inputs)
+        
     end = time.time()
     print("Time: ", end - start)
     train_loss = train_loss / len(train_loader.dataset)
     return train_loss
 
 
-def val_step(net, val_loader):
+def val_step(net, val_loader, criterion, device):
     net.eval()
     val_loss = 0.
-    device = get_best_device()
-    net = net.to(device)
-    for batch_idx, batch in enumerate(val_loader):
-        inputs, labels = batch
-        targets = labels
-        inputs = inputs.to(device)
-        targets = targets.to(device)
-        with torch.no_grad():
-            output = net(Variable(inputs))
-            target = Variable(targets)
-        loss = torch.mean(torch.pow(output - target, 2))
-        val_loss += loss.cpu().data.numpy() * len(inputs)
+    
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(val_loader):
+            inputs, labels = batch
+            inputs = inputs.to(device)
+            labels = labels.to(device)
+            
+            output = net(inputs)
+            loss = criterion(output, labels)
+            val_loss += loss.item() * len(inputs)
+            
     val_loss = val_loss / len(val_loader.dataset)
     return val_loss
 
 
-def get_acc(net, loader):
+def get_acc(net, loader, device):
     net.eval()
-    count = 0
-    device = get_best_device()
-    net = net.to(device)
-    for batch_idx, batch in enumerate(loader):
-        inputs, targets = batch
-        inputs = inputs.to(device)
-        targets = targets.to(device)
-        with torch.no_grad():
-            output = net(Variable(inputs))
-            target = Variable(targets)
+    correct = 0
+    total = 0
+    
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(loader):
+            inputs, labels = batch
+            inputs = inputs.to(device)
+            labels = labels.to(device)
+            
+            outputs = net(inputs)
+            _, predicted = torch.max(outputs.data, 1)
+            
+            # Handle both one-hot and index labels
+            if labels.dim() > 1 and labels.size(1) > 1:  # one-hot encoded
+                labels = torch.argmax(labels, dim=1)
+                
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+            
+    return 100 * correct / total
 
-        preds = torch.argmax(output, dim=-1)
-        labels = torch.argmax(target, dim=-1)
 
-        count += torch.sum(labels == preds).cpu().data.numpy()
-    return count / len(loader.dataset) * 100
-
-
-def get_r2(net, loader):
+def get_r2(net, loader, device):
     net.eval()
-    count = 0
     preds = []
-    labels = []
-    device = get_best_device()
-    net = net.to(device)
-    for batch_idx, batch in enumerate(loader):
-        inputs, targets = batch
-        inputs = inputs.to(device)
-        targets = targets.to(device)
-        with torch.no_grad():
-            output = net(Variable(inputs)).flatten().cpu().numpy()
-            target = Variable(targets).flatten().cpu().numpy()
+    labels_list = []
+    
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(loader):
+            inputs, targets = batch
+            inputs = inputs.to(device)
+            targets = targets.to(device)
+            
+            output = net(inputs).flatten().cpu().numpy()
+            target = targets.flatten().cpu().numpy()
             preds.append(output)
-            labels.append(target)
+            labels_list.append(target)
+            
     preds = np.concatenate(preds)
-    labels = np.concatenate(labels)
-    return r2_score(labels, preds)
+    labels_list = np.concatenate(labels_list)
+    return r2_score(labels_list, preds)

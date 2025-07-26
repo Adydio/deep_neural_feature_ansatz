@@ -32,7 +32,6 @@ def split(trainset, p=.8):
 
 
 def get_svhn(split_percentage=.8, num_train=float('inf'), num_test=float('inf')):
-
     NUM_CLASSES = 10
     transform = transforms.Compose([transforms.ToTensor()])
     svhn_path = '~/datasets/'
@@ -45,10 +44,10 @@ def get_svhn(split_percentage=.8, num_train=float('inf'), num_test=float('inf'))
     trainset, valset = split(trainset, p=split_percentage)
 
     trainloader = torch.utils.data.DataLoader(trainset, batch_size=128,
-                                              shuffle=True, num_workers=1)
+                                              shuffle=True, num_workers=32)
 
     valloader = torch.utils.data.DataLoader(valset, batch_size=128,
-                                            shuffle=False, num_workers=1)
+                                            shuffle=False, num_workers=32)
 
     testset = torchvision.datasets.SVHN(root=svhn_path,
                                         split='test',
@@ -58,7 +57,7 @@ def get_svhn(split_percentage=.8, num_train=float('inf'), num_test=float('inf'))
     testset = one_hot_data(testset, NUM_CLASSES, num_samples=num_test)
 
     testloader = torch.utils.data.DataLoader(testset, batch_size=128,
-                                             shuffle=False, num_workers=1)
+                                             shuffle=False, num_workers=32)
 
     print("Num Train: ", len(trainset), "Num Val: ", len(valset),
           "Num Test: ", len(testset))
