@@ -213,7 +213,7 @@ def train_step(net, optimizer, train_loader, criterion, device, scaler=None):
             loss = criterion(output, labels)
             loss.backward()
             optimizer.step()
-            
+        net.zero_grad(set_to_none=True)
         train_loss += loss.item() * len(inputs)
         
     end = time.time()

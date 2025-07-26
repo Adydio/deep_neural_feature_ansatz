@@ -27,16 +27,8 @@ def main():
     parser = argparse.ArgumentParser(description='Train neural net with flexible validation interval and optimizer.')
     parser.add_argument('--val_interval', type=int, default=20, help='Validation interval (default: 20)')
     parser.add_argument('--optimizer', type=str, default='sgd', choices=['sgd', 'adam', 'muon'], help='Optimizer (default: sgd)')
-    parser.add_argument('--lr', type=float, default=0.001, help='Learning rate (default: 0.001 for muon, 0.1 for sgd/adam)')
+    parser.add_argument('--lr', type=float, default=0.1, help='Learning rate (default: 0.1)')
     args = parser.parse_args()
-
-    # Adjust learning rate based on optimizer if not explicitly set
-    if args.optimizer == 'muon' and args.lr == 0.001:
-        # Use muon-optimized learning rate
-        args.lr = 0.24
-    elif args.optimizer in ['sgd', 'adam'] and args.lr == 0.001:
-        # Use traditional learning rate for sgd/adam
-        args.lr = 0.1
 
     # Pick configs to save model
     configs = {}
