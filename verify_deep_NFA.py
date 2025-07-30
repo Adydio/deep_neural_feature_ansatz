@@ -86,7 +86,7 @@ def load_init_nn(path, width, depth, dim, num_classes, layer_idx=0, act_name='re
     net = neural_model.Net(dim, width=width, depth=depth,
                                 num_classes=num_classes, act_name=act_name)
     d = torch.load(prefix + 'init_' + suffix)
-    net.load_state_dict(d['state_dict'])
+    net.load_state_dict(clean_compiled_state_dict(d['state_dict']))
 
     for idx, p in enumerate(net.parameters()):
         if idx == layer_idx:
