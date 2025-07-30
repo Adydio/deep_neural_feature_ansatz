@@ -127,8 +127,8 @@ def train_network(train_loader, val_loader, test_loader, num_classes,
     if configs and configs['optimizer'] == 'muon':
         net = torch.compile(net, mode='reduce-overhead')
     
-    # Use CrossEntropyLoss for classification
-    criterion = nn.CrossEntropyLoss()
+    # Use MSE Loss (L2 loss)
+    criterion = nn.MSELoss()
 
     d = {}
     d['state_dict'] = net.state_dict()
@@ -252,11 +252,13 @@ def get_acc(net, loader, device):
             labels = labels.to(device)
             
             outputs = net(inputs)
-            _, predicted = torch.max(outputs.data, 1)
             
             # Handle both one-hot and index labels
             if labels.dim() > 1 and labels.size(1) > 1:  # one-hot encoded
+                predicted = torch.argmax(outputs, dim=1)
                 labels = torch.argmax(labels, dim=1)
+            else:  # index labels
+                predicted = torch.argmax(outputs, dim=1)
                 
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
