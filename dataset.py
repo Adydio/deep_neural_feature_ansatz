@@ -6,6 +6,19 @@ from sklearn.model_selection import train_test_split
 import numpy as np
 from tqdm import tqdm
 from numpy.linalg import norm
+import multiprocessing as mp
+
+
+def get_optimal_num_workers():
+    """
+    Get optimal number of workers for DataLoader based on system capabilities.
+    Returns min(cpu_count, 12) to avoid the warning about excessive worker creation.
+    """
+    cpu_count = mp.cpu_count()
+    # PyTorch suggests max 12 workers to avoid slowness/freeze
+    optimal_workers = min(cpu_count, 12)
+    print(f"Using {optimal_workers} workers (CPU cores: {cpu_count})")
+    return optimal_workers
 
 
 def one_hot_data(dataset, num_classes, num_samples=-1, shift_label=False):
@@ -43,11 +56,14 @@ def get_svhn(split_percentage=.8, num_train=float('inf'), num_test=float('inf'))
     trainset = one_hot_data(trainset, NUM_CLASSES, num_samples=num_train)
     trainset, valset = split(trainset, p=split_percentage)
 
+    # Get optimal number of workers to avoid warnings
+    num_workers = get_optimal_num_workers()
+
     trainloader = torch.utils.data.DataLoader(trainset, batch_size=128,
-                                              shuffle=True, num_workers=32)
+                                              shuffle=True, num_workers=num_workers)
 
     valloader = torch.utils.data.DataLoader(valset, batch_size=128,
-                                            shuffle=False, num_workers=32)
+                                            shuffle=False, num_workers=num_workers)
 
     testset = torchvision.datasets.SVHN(root=svhn_path,
                                         split='test',
@@ -57,7 +73,7 @@ def get_svhn(split_percentage=.8, num_train=float('inf'), num_test=float('inf'))
     testset = one_hot_data(testset, NUM_CLASSES, num_samples=num_test)
 
     testloader = torch.utils.data.DataLoader(testset, batch_size=128,
-                                             shuffle=False, num_workers=32)
+                                             shuffle=False, num_workers=num_workers)
 
     print("Num Train: ", len(trainset), "Num Val: ", len(valset),
           "Num Test: ", len(testset))
@@ -78,11 +94,14 @@ def get_cifar(split_percentage=.8, num_train=float('inf'), num_test=float('inf')
     trainset = one_hot_data(trainset, NUM_CLASSES, num_samples=num_train)
     trainset, valset = split(trainset, p=split_percentage)
 
+    # Get optimal number of workers
+    num_workers = get_optimal_num_workers()
+
     trainloader = torch.utils.data.DataLoader(trainset, batch_size=128,
-                                              shuffle=True, num_workers=1)
+                                              shuffle=True, num_workers=num_workers)
 
     valloader = torch.utils.data.DataLoader(valset, batch_size=128,
-                                            shuffle=False, num_workers=1)
+                                            shuffle=False, num_workers=num_workers)
 
     testset = torchvision.datasets.CIFAR10(root=path,
                                            train=False,
@@ -92,7 +111,7 @@ def get_cifar(split_percentage=.8, num_train=float('inf'), num_test=float('inf')
     testset = one_hot_data(testset, NUM_CLASSES, num_samples=num_test)
 
     testloader = torch.utils.data.DataLoader(testset, batch_size=128,
-                                             shuffle=False, num_workers=1)
+                                             shuffle=False, num_workers=num_workers)
 
     print("Num Train: ", len(trainset), "Num Val: ", len(valset),
           "Num Test: ", len(testset))
@@ -113,9 +132,12 @@ def get_two_coordinates(split_percentage=.8, num_train=2000, num_test=1000, d=10
     X_test, y_test = sample_data(num_test, d)
     testset = list(zip(X_test, y_test))
 
-    train_loader = DataLoader(trainset, batch_size=128, shuffle=True, num_workers=1)
-    val_loader = DataLoader(valset, batch_size=128, shuffle=False, num_workers=1)
-    test_loader = DataLoader(testset, batch_size=128, shuffle=False, num_workers=1)
+    # Get optimal number of workers
+    num_workers = get_optimal_num_workers()
+
+    train_loader = DataLoader(trainset, batch_size=128, shuffle=True, num_workers=num_workers)
+    val_loader = DataLoader(valset, batch_size=128, shuffle=False, num_workers=num_workers)
+    test_loader = DataLoader(testset, batch_size=128, shuffle=False, num_workers=num_workers)
     print("Num Train: ", len(trainset), "Num Val: ", len(valset),
           "Num Test: ", len(testset))
 
@@ -173,11 +195,15 @@ def get_celeba(feature_idx, split_percentage=.8,
                                            download=False)
     trainset = celeba_subset(trainset, feature_idx, num_samples=num_train)
     trainset, valset = split(trainset, p=split_percentage)
+    
+    # Get optimal number of workers
+    num_workers = get_optimal_num_workers()
+    
     trainloader = torch.utils.data.DataLoader(trainset, batch_size=128,
-                                              shuffle=True, num_workers=1)
+                                              shuffle=True, num_workers=num_workers)
 
     valloader = torch.utils.data.DataLoader(valset, batch_size=128,
-                                            shuffle=False, num_workers=1)
+                                            shuffle=False, num_workers=num_workers)
 
     testset = torchvision.datasets.CelebA(root=celeba_path,
                                               split='test',
@@ -185,7 +211,7 @@ def get_celeba(feature_idx, split_percentage=.8,
                                               download=False)
     testset = celeba_subset(testset, feature_idx, num_samples=num_test)
     testloader = torch.utils.data.DataLoader(testset, batch_size=128,
-                                             shuffle=False, num_workers=1)
+                                             shuffle=False, num_workers=num_workers)
 
     print("Train Size: ", len(trainset), "Val Size: ", len(valset), "Test Size: ", len(testset))
     return trainloader, valloader, testloader
@@ -265,10 +291,14 @@ def get_cifar_mnist(split_percentage=.8, num_train_per_class=float('inf'),
                                                     download=False)
         trainset = merge_data(cifar_trainset, mnist_trainset, num_train_per_class)
         trainset, valset = split(trainset, p=split_percentage)
+        
+        # Get optimal number of workers
+        num_workers = get_optimal_num_workers()
+        
         trainloader = torch.utils.data.DataLoader(trainset, batch_size=128,
-                                                  shuffle=True, num_workers=2)
+                                                  shuffle=True, num_workers=num_workers)
         valloader = torch.utils.data.DataLoader(valset, batch_size=128,
-                                                shuffle=False, num_workers=1)
+                                                shuffle=False, num_workers=num_workers)
 
         cifar_testset = torchvision.datasets.CIFAR10(root=path,
                                                      train=False,
@@ -282,7 +312,7 @@ def get_cifar_mnist(split_percentage=.8, num_train_per_class=float('inf'),
 
         testset = merge_data(cifar_testset, mnist_testset, num_test_per_class)
         testloader = torch.utils.data.DataLoader(testset, batch_size=128,
-                                                 shuffle=False, num_workers=2)
+                                                 shuffle=False, num_workers=num_workers)
 
         print("Num Train: ", len(trainset), "Num Val: ", len(valset),
               "Num Test: ", len(testset))
@@ -341,18 +371,22 @@ def get_stl_star(split_percentage=.8, num_train=float('inf'),
                                           download=False)
     trainset = one_hot_stl_toy(trainset, num_samples=num_train)
     trainset, valset = split(trainset, p=split_percentage)
+    
+    # Get optimal number of workers
+    num_workers = get_optimal_num_workers()
+    
     trainloader = torch.utils.data.DataLoader(trainset, batch_size=128,
-                                              shuffle=True, num_workers=2)
+                                              shuffle=True, num_workers=num_workers)
 
     valloader = torch.utils.data.DataLoader(valset, batch_size=128,
-                                            shuffle=False, num_workers=1)
+                                            shuffle=False, num_workers=num_workers)
     testset = torchvision.datasets.STL10(root=path,
                                          split='test',
                                          transform=transform,
                                          download=False)
     testset = one_hot_stl_toy(testset, num_samples=num_test)
     testloader = torch.utils.data.DataLoader(testset, batch_size=128,
-                                             shuffle=False, num_workers=2)
+                                             shuffle=False, num_workers=num_workers)
     print("Num Train: ", len(trainset), "Num Val: ", len(valset),
           "Num Test: ", len(testset))
     return trainloader, valloader, testloader
