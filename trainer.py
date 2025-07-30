@@ -16,6 +16,29 @@ import neural_model
 import numpy as np
 from sklearn.metrics import r2_score
 
+
+def clean_compiled_state_dict(state_dict):
+    """
+    Remove '_orig_mod.' prefix from compiled model state dict keys.
+    This ensures compatibility when loading models saved after torch.compile().
+    """
+    cleaned_state_dict = {}
+    for key, value in state_dict.items():
+        if key.startswith('_orig_mod.'):
+            cleaned_key = key[len('_orig_mod.'):]
+            cleaned_state_dict[cleaned_key] = value
+        else:
+            cleaned_state_dict[key] = value
+    return cleaned_state_dict
+
+
+def get_clean_state_dict(net):
+    """
+    Get a clean state dict from the model, removing torch.compile prefixes if present.
+    """
+    state_dict = net.state_dict()
+    return clean_compiled_state_dict(state_dict)
+
 @torch.compile
 def zeropower_via_newtonschulz5(G, steps=3, eps=1e-7):
     """
@@ -131,7 +154,7 @@ def train_network(train_loader, val_loader, test_loader, num_classes,
     criterion = nn.MSELoss()
 
     d = {}
-    d['state_dict'] = net.state_dict()
+    d['state_dict'] = get_clean_state_dict(net)
     if name is not None:
         torch.save(d, 'saved_nns/init_' + name + '.pth')
 
@@ -166,7 +189,7 @@ def train_network(train_loader, val_loader, test_loader, num_classes,
                 best_test_acc = test_acc
                 net.cpu()
                 d = {}
-                d['state_dict'] = net.state_dict()
+                d['state_dict'] = get_clean_state_dict(net)
                 if name is not None:
                     torch.save(d, 'saved_nns/' + name + '.pth')
                 net.to(device)
@@ -185,7 +208,7 @@ def train_network(train_loader, val_loader, test_loader, num_classes,
 
     net.cpu()
     d = {}
-    d['state_dict'] = net.state_dict()
+    d['state_dict'] = get_clean_state_dict(net)
     torch.save(d, 'saved_nns/' + name + '_final.pth')
     return best_val_acc, best_test_acc
 
@@ -202,7 +225,7 @@ def train_step(net, optimizer, train_loader, criterion, device, scaler=None):
         labels = labels.to(device)
         
         if scaler and device.type == 'cuda':
-            with torch.cuda.amp.autocast():
+            with torch.amp.autocast('cuda'):
                 output = net(inputs)
                 loss = criterion(output, labels)
             scaler.scale(loss).backward()

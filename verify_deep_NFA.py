@@ -6,6 +6,21 @@ def get_best_device():
         return torch.device('mps')
     else:
         return torch.device('cpu')
+
+def clean_compiled_state_dict(state_dict):
+    """
+    Remove '_orig_mod.' prefix from compiled model state dict keys.
+    This fixes the loading issue when models are saved after torch.compile().
+    """
+    cleaned_state_dict = {}
+    for key, value in state_dict.items():
+        if key.startswith('_orig_mod.'):
+            cleaned_key = key[len('_orig_mod.'):]
+            cleaned_state_dict[cleaned_key] = value
+        else:
+            cleaned_state_dict[key] = value
+    return cleaned_state_dict
+
 import numpy as np
 import torch
 import random
@@ -40,7 +55,7 @@ def load_nn(path, width, depth, dim, num_classes, layer_idx=0,
                                     num_classes=num_classes,
                                     act_name=act_name)
         d = torch.load(prefix + 'init_' + suffix)
-        init_net.load_state_dict(d['state_dict'])
+        init_net.load_state_dict(clean_compiled_state_dict(d['state_dict']))
         init_params = [p for idx, p in enumerate(init_net.parameters())]
 
     net = neural_model.Net(dim, width=width, depth=depth,
@@ -48,7 +63,7 @@ def load_nn(path, width, depth, dim, num_classes, layer_idx=0,
                            act_name=act_name)
 
     d = torch.load(path)
-    net.load_state_dict(d['state_dict'])
+    net.load_state_dict(clean_compiled_state_dict(d['state_dict']))
 
     for idx, p in enumerate(net.parameters()):
         if idx == layer_idx:
