@@ -28,12 +28,12 @@ def main():
     parser.add_argument('--val_interval', type=int, default=20, help='Validation interval (default: 20)')
     parser.add_argument('--optimizer', type=str, default='sgd', choices=['sgd', 'adam', 'muon'], help='Optimizer (default: sgd)')
     parser.add_argument('--lr', type=float, default=0.1, help='Learning rate (default: 0.1)')
-    parser.add_argument('--batch_size', type=int, default=500, help='Batch size (default: 500)')
+    parser.add_argument('--num_epochs', type=int, default=500, help='Number of epochs (default: 500)')
     args = parser.parse_args()
 
     # Pick configs to save model
     configs = {}
-    configs['num_epochs'] = 500
+    configs['num_epochs'] = args.num_epochs
     configs['learning_rate'] = args.lr
     configs['weight_decay'] = 0
     configs['init'] = 'default'
