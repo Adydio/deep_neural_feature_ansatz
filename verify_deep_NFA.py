@@ -189,7 +189,7 @@ def egop(net, dataset, centering=False):
     """
     device = get_best_device()
     # Reduce batch size to save memory
-    bs = 200  # Reduced from 1000 to 200
+    bs = 128  # Reduced from 1000 to 200
     batches = torch.split(dataset, bs)
     net = net.to(device)
     
