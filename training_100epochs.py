@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """
-Colab-Optimized Training and AGOP Analysis Script
+Custom Training and AGOP Analysis Script - 100 Epochs Version
 
-Memory-optimized version for Google Colab with reduced sample sizes
-and efficient memory management.
+Modified version with:
+- 100 epochs total
+- Save models for epochs 1-20 (every epoch)
+- Save models for epochs 40, 60, 80, 100 (milestone epochs)
+- Generate same visualization plots
 """
 
 import os
@@ -44,7 +47,7 @@ from verify_deep_NFA import (
 def setup_experiment_dir(optimizer_name):
     """Create experiment directory structure"""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    exp_dir = f"experiments/{optimizer_name}_{timestamp}"
+    exp_dir = f"experiments/{optimizer_name}_100epochs_{timestamp}"
     
     os.makedirs(exp_dir, exist_ok=True)
     os.makedirs(f"{exp_dir}/models", exist_ok=True)
@@ -144,18 +147,35 @@ def compute_agop_nfm_correlation_optimized(model_path, layer_indices, max_sample
     
     return correlations
 
-def train_with_analysis_colab(optimizer_name, lr, num_epochs=500, val_interval=20):
+def get_analysis_epochs(num_epochs=100):
     """
-    Training with comprehensive AGOP analysis using ALL training samples
+    Define which epochs to analyze:
+    - Epochs 0-20: every epoch
+    - Epochs 40, 60, 80, 100: milestone epochs
+    """
+    analysis_epochs = list(range(0, 21))  # 0, 1, 2, ..., 20
+    milestone_epochs = [40, 60, 80, 100]
     
-    This function ensures that AGOP computation uses the exact same training data
-    as used during the training process for accurate correlation analysis.
+    # Only add milestone epochs if they're within the total epochs
+    for epoch in milestone_epochs:
+        if epoch <= num_epochs:
+            analysis_epochs.append(epoch)
+    
+    return sorted(set(analysis_epochs))
+
+def train_with_analysis_100epochs(optimizer_name, lr, num_epochs=100):
+    """
+    Training with custom analysis schedule for 100 epochs
+    
+    Analysis schedule:
+    - Epochs 0-20: analyze every epoch
+    - Epochs 40, 60, 80, 100: milestone analysis
     """
     
-    print(f"\n=== Starting Training with {optimizer_name.upper()} ===")
+    print(f"\n=== Starting 100-Epoch Training with {optimizer_name.upper()} ===")
     print(f"Learning rate: {lr}")
-    print(f"Epochs: {num_epochs}")
-    print(f"Analysis interval: {val_interval}")
+    print(f"Total epochs: {num_epochs}")
+    print(f"Analysis schedule: epochs 0-20 (every epoch), then 40, 60, 80, 100")
     print(f"AGOP Analysis: Using ALL training samples for accurate correlation")
     
     # Setup experiment directory
@@ -187,8 +207,7 @@ def train_with_analysis_colab(optimizer_name, lr, num_epochs=500, val_interval=2
         'freeze': False,
         'width': 1024,
         'depth': 5,
-        'act': 'relu',
-        'val_interval': val_interval
+        'act': 'relu'
     }
     
     # Create model
@@ -215,11 +234,9 @@ def train_with_analysis_colab(optimizer_name, lr, num_epochs=500, val_interval=2
     criterion = torch.nn.MSELoss()
     scaler = torch.cuda.amp.GradScaler() if device.type == 'cuda' else None
     
-    # Save initial model
-    net.cpu()
-    d = {'state_dict': trainer.get_clean_state_dict(net)}
-    torch.save(d, f'{exp_dir}/models/init_model.pth')
-    net.to(device)
+    # Get analysis epochs
+    analysis_epochs = get_analysis_epochs(num_epochs)
+    print(f"Will analyze at epochs: {analysis_epochs}")
     
     # Training tracking
     results = {
@@ -252,8 +269,8 @@ def train_with_analysis_colab(optimizer_name, lr, num_epochs=500, val_interval=2
                 train_loss = total_loss / num_batches if num_batches > 0 else 0.0
             net.train()  # Set back to training mode
         
-        # Analysis every val_interval epochs
-        if epoch % val_interval == 0:
+        # Analysis for specific epochs
+        if epoch in analysis_epochs:
             print(f"\n--- Epoch {epoch} Analysis ---")
             
             # Validation loss
@@ -292,13 +309,13 @@ def train_with_analysis_colab(optimizer_name, lr, num_epochs=500, val_interval=2
         json.dump(results, f, indent=2)
     
     # Generate plots
-    generate_plots_colab(results, exp_dir, optimizer_name)
+    generate_plots_100epochs(results, exp_dir, optimizer_name)
     
     print(f"\nTraining completed! Results saved in: {exp_dir}")
     return exp_dir, results
 
-def generate_plots_colab(results, exp_dir, optimizer_name):
-    """Generate comprehensive visualization plots optimized for Colab"""
+def generate_plots_100epochs(results, exp_dir, optimizer_name):
+    """Generate comprehensive visualization plots for 100-epoch training"""
     
     print("Generating plots...")
     
@@ -308,7 +325,7 @@ def generate_plots_colab(results, exp_dir, optimizer_name):
     
     # Create subplots: 5 layers in a 2x3 grid
     fig, axes = plt.subplots(2, 3, figsize=(20, 12))
-    fig.suptitle(f'{optimizer_name.upper()} Training Analysis: Loss and AGOP/NFM Correlation', 
+    fig.suptitle(f'{optimizer_name.upper()} Training Analysis (100 Epochs): Loss and AGOP/NFM Correlation', 
                  fontsize=18, fontweight='bold')
     
     # Flatten axes for easier indexing
@@ -361,6 +378,13 @@ def generate_plots_colab(results, exp_dir, optimizer_name):
         # Set correlation y-axis to consistent 0-1 range for all layers
         ax2.set_ylim(0, 1)
         ax2.set_yticks([0, 0.2, 0.4, 0.6, 0.8, 1.0])  # Clear tick marks
+        
+        # Add epoch markers for analysis points
+        if len(epochs) > 0:
+            # Mark the transition from detailed to milestone analysis
+            ax.axvline(x=20, color='gray', linestyle='--', alpha=0.5, linewidth=1)
+            ax.text(20, ax.get_ylim()[1]*0.9, 'Detailed→Milestone', rotation=90, 
+                   fontsize=8, alpha=0.7, ha='right')
     
     # Hide the last (6th) subplot
     axes_flat[5].set_visible(False)
@@ -369,18 +393,23 @@ def generate_plots_colab(results, exp_dir, optimizer_name):
     plt.tight_layout()
     
     # Save plot
-    plot_path = f'{exp_dir}/plots/training_analysis.png'
+    plot_path = f'{exp_dir}/plots/training_analysis_100epochs.png'
     plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-    plt.savefig(f'{exp_dir}/plots/training_analysis.pdf', bbox_inches='tight')
+    plt.savefig(f'{exp_dir}/plots/training_analysis_100epochs.pdf', bbox_inches='tight')
     
-    # Display in Colab
-    plt.show()
+    # Display in Colab (if running in Colab)
+    try:
+        from IPython.display import display
+        plt.show()
+    except:
+        pass
+    
     plt.close()
     
     print(f"Plots saved in: {exp_dir}/plots/")
 
-def run_all_optimizers():
-    """Run training for all three optimizers"""
+def run_all_optimizers_100epochs():
+    """Run 100-epoch training for all three optimizers"""
     
     optimizers = [
         ('sgd', 0.1),
@@ -391,16 +420,15 @@ def run_all_optimizers():
     results_summary = {}
     
     for optimizer_name, lr in optimizers:
-        print(f"\n{'='*60}")
-        print(f"Running {optimizer_name.upper()} with lr={lr}")
-        print(f"{'='*60}")
+        print(f"\n{'='*70}")
+        print(f"Running {optimizer_name.upper()} with lr={lr} (100 epochs)")
+        print(f"{'='*70}")
         
         try:
-            exp_dir, results = train_with_analysis_colab(
+            exp_dir, results = train_with_analysis_100epochs(
                 optimizer_name=optimizer_name,
                 lr=lr,
-                num_epochs=500,
-                val_interval=20
+                num_epochs=100
             )
             
             results_summary[optimizer_name] = {
@@ -417,9 +445,9 @@ def run_all_optimizers():
             results_summary[optimizer_name] = {'error': str(e)}
     
     # Print summary
-    print(f"\n{'='*60}")
-    print("FINAL SUMMARY")
-    print(f"{'='*60}")
+    print(f"\n{'='*70}")
+    print("FINAL SUMMARY - 100 EPOCHS TRAINING")
+    print(f"{'='*70}")
     
     for optimizer_name in ['sgd', 'adam', 'muon']:
         if optimizer_name in results_summary:
@@ -437,15 +465,66 @@ def run_all_optimizers():
     
     return results_summary
 
+def run_single_optimizer_100epochs(optimizer_name, lr):
+    """Run 100-epoch training for a single optimizer"""
+    
+    print(f"\n{'='*70}")
+    print(f"Running {optimizer_name.upper()} with lr={lr} (100 epochs)")
+    print(f"Analysis schedule: epochs 0-20 (every epoch), then 40, 60, 80, 100")
+    print(f"{'='*70}")
+    
+    try:
+        exp_dir, results = train_with_analysis_100epochs(
+            optimizer_name=optimizer_name,
+            lr=lr,
+            num_epochs=100
+        )
+        
+        print(f"\n{'='*70}")
+        print(f"TRAINING COMPLETE - {optimizer_name.upper()}")
+        print(f"{'='*70}")
+        print(f"Final Train Loss: {results['train_losses'][-1]:.6f}")
+        print(f"Final Val Loss: {results['val_losses'][-1]:.6f}")
+        print(f"Final Correlations:")
+        for layer_idx in range(5):
+            corr = results['layer_correlations'][layer_idx][-1]
+            print(f"  Layer {layer_idx}: {corr:.6f}")
+        print(f"Results saved in: {exp_dir}")
+        
+        return exp_dir, results
+        
+    except Exception as e:
+        print(f"Error training {optimizer_name}: {e}")
+        import traceback
+        traceback.print_exc()
+        return None, None
+
 if __name__ == "__main__":
-    print("=== Training and AGOP Analysis with ALL Training Samples ===")
-    print("This script will train models with SGD, Adam, and Muon optimizers")
-    print("Each training: 500 epochs, analysis every 20 epochs")
+    parser = argparse.ArgumentParser(description='100-Epoch Training and AGOP Analysis')
+    parser.add_argument('--optimizer', type=str, choices=['sgd', 'adam', 'muon', 'all'], 
+                       default='all', help='Optimizer to use')
+    parser.add_argument('--lr', type=float, help='Learning rate (auto-set if not specified)')
+    
+    args = parser.parse_args()
+    
+    print("=== 100-Epoch Training and AGOP Analysis ===")
+    print("Analysis schedule: epochs 0-20 (every epoch), then 40, 60, 80, 100")
     print("IMPORTANT: AGOP analysis uses ALL training samples for accurate correlation")
     print("(Memory usage will be higher but ensures theoretical correctness)\n")
     
-    # Run all optimizers
-    results_summary = run_all_optimizers()
+    if args.optimizer == 'all':
+        # Run all optimizers
+        results_summary = run_all_optimizers_100epochs()
+    else:
+        # Run single optimizer
+        if args.lr is None:
+            # Set default learning rates
+            default_lrs = {'sgd': 0.1, 'adam': 0.001, 'muon': 0.01}
+            lr = default_lrs[args.optimizer]
+        else:
+            lr = args.lr
+        
+        exp_dir, results = run_single_optimizer_100epochs(args.optimizer, lr)
     
-    print("\n=== ALL TRAINING COMPLETE ===")
+    print("\n=== TRAINING COMPLETE ===")
     print("Check the experiments/ directory for detailed results and plots.")

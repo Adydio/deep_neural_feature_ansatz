@@ -201,11 +201,23 @@ def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max
     print(f"\nStarting training loop...")
     
     for epoch in range(num_epochs + 1):
-        # Training step
-        if epoch > 0:  # Skip training on epoch 0 (initial state)
+        # Training step - calculate actual loss for epoch 0 (initial state)
+        if epoch > 0:  
             train_loss = trainer.train_step(net, optimizer, trainloader, criterion, device, scaler)
         else:
-            train_loss = 0.0
+            # Calculate initial training loss without training step
+            net.eval()
+            with torch.no_grad():
+                total_loss = 0.0
+                num_batches = 0
+                for inputs, targets in trainloader:
+                    inputs, targets = inputs.to(device), targets.to(device)
+                    outputs = net(inputs)
+                    loss = criterion(outputs, targets)
+                    total_loss += loss.item()
+                    num_batches += 1
+                train_loss = total_loss / num_batches if num_batches > 0 else 0.0
+            net.train()  # Set back to training mode
         
         # Analysis every val_interval epochs
         if epoch % val_interval == 0:
@@ -322,11 +334,9 @@ def generate_plots(results, exp_dir, optimizer_name):
             loss_range = loss_max - loss_min
             ax.set_ylim(loss_min - 0.1 * loss_range, loss_max + 0.1 * loss_range)
         
-        if len(correlations) > 0 and max(correlations) > 0:
-            corr_min = min(correlations)
-            corr_max = max(correlations)
-            corr_range = corr_max - corr_min
-            ax2.set_ylim(corr_min - 0.1 * corr_range, corr_max + 0.1 * corr_range)
+        # Set correlation y-axis to consistent 0-1 range for all layers
+        ax2.set_ylim(0, 1)
+        ax2.set_yticks([0, 0.2, 0.4, 0.6, 0.8, 1.0])  # Clear tick marks
     
     # Hide the last (6th) subplot
     axes_flat[5].set_visible(False)
