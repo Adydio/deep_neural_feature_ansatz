@@ -40,9 +40,15 @@ def setup_experiment_dir(optimizer_name):
     
     return exp_dir
 
-def compute_agop_nfm_correlation(model_path, layer_indices, max_samples=None):
+def compute_agop_nfm_correlation(model_path, layer_indices, max_samples=None, init_model_path=None):
     """
-    Compute AGOP vs NFM correlation for specified layers
+    AGOP vs NFM correlation computation
+    
+    Args:
+        model_path: Path to the saved model
+        layer_indices: List of layer indices to analyze
+        max_samples: limit samples for AGOP computation (memory management)
+        init_model_path: Path to initial model (for remove_init operation)
     
     Returns:
         dict: {layer_idx: correlation_value}
@@ -71,6 +77,15 @@ def compute_agop_nfm_correlation(model_path, layer_indices, max_samples=None):
         # Load dataset
         trainloader, valloader, testloader = dataset.get_svhn()
         
+        # Load initial model if provided for remove_init operation
+        init_params = None
+        if init_model_path is not None:
+            init_net = neural_model.Net(dim, width=width, depth=depth,
+                                      num_classes=NUM_CLASSES, act_name=act_name)
+            init_d = torch.load(init_model_path, map_location='cpu')
+            init_net.load_state_dict(clean_compiled_state_dict(init_d['state_dict']))
+            init_params = [p.data.cpu().numpy() for p in init_net.parameters()]
+        
         for layer_idx in layer_indices:
             print(f"Computing AGOP/NFM correlation for layer {layer_idx}...")
             
@@ -84,6 +99,13 @@ def compute_agop_nfm_correlation(model_path, layer_indices, max_samples=None):
             for idx, p in enumerate(net.parameters()):
                 if idx == layer_idx:
                     M = p.data.cpu().numpy()
+                    
+                    # Apply remove_init operation (same as verify_deep_NFA.py)
+                    if init_params is not None:
+                        M0 = init_params[idx]
+                        M = M - M0  # Remove initial parameters
+                        print(f"    Applied remove_init: M shape after init removal: {M.shape}")
+                    
                     break
             
             # Compute NFM
@@ -182,11 +204,13 @@ def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max
     criterion = torch.nn.MSELoss()
     scaler = torch.cuda.amp.GradScaler() if device.type == 'cuda' else None
     
-    # Save initial model
+    # Save initial model before training starts (for remove_init operation)
     net.cpu()
     d = {'state_dict': trainer.get_clean_state_dict(net)}
-    torch.save(d, f'{exp_dir}/models/init_model.pth')
+    init_model_path = f'{exp_dir}/models/init_model.pth'
+    torch.save(d, init_model_path)
     net.to(device)
+    print(f"Initial model saved: {init_model_path}")
     
     # Training tracking
     results = {
@@ -243,7 +267,8 @@ def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max
             os.rename(model_path, temp_model_path)
             
             try:
-                correlations = compute_agop_nfm_correlation(temp_model_path, layer_indices, max_samples)
+                correlations = compute_agop_nfm_correlation(temp_model_path, layer_indices, 
+                                                           max_samples, init_model_path=init_model_path)
             finally:
                 # Rename back
                 os.rename(temp_model_path, model_path)
