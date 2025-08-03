@@ -52,9 +52,15 @@ def setup_experiment_dir(optimizer_name):
     
     return exp_dir
 
-def compute_agop_nfm_correlation_optimized(model_path, layer_indices, max_samples=5000):
+def compute_agop_nfm_correlation_optimized(model_path, layer_indices, max_samples=None):
     """
-    Memory-optimized AGOP vs NFM correlation computation
+    AGOP vs NFM correlation computation using ALL training samples
+    
+    Args:
+        model_path: Path to the saved model
+        layer_indices: List of layer indices to analyze
+        max_samples: If None, uses ALL training samples (recommended for accurate AGOP)
+                    If specified, limits samples for memory management
     
     Returns:
         dict: {layer_idx: correlation_value}
@@ -111,11 +117,12 @@ def compute_agop_nfm_correlation_optimized(model_path, layer_indices, max_sample
             subnet = build_subnetwork(net, M.shape[0], width, depth, NUM_CLASSES, 
                                     layer_idx=layer_idx, random_net=False, act_name=act_name)
             
-            # Get layer output with memory limit
+            # Get layer output using ALL training samples (same as during training)
             out = get_layer_output(net, trainloader, layer_idx=layer_idx, max_samples=max_samples)
             
-            # Compute AGOP (uncentered) with smaller batch size
-            print(f"    Computing EGOP for {out.shape[0]} samples...")
+            # Compute AGOP (uncentered) 
+            total_samples = out.shape[0]
+            print(f"    Computing EGOP for {total_samples} samples (ALL training data)...")
             G = egop(subnet, out, centering=False)
             
             # Compute correlation
@@ -139,14 +146,17 @@ def compute_agop_nfm_correlation_optimized(model_path, layer_indices, max_sample
 
 def train_with_analysis_colab(optimizer_name, lr, num_epochs=500, val_interval=20):
     """
-    Colab-optimized training with comprehensive analysis
+    Training with comprehensive AGOP analysis using ALL training samples
+    
+    This function ensures that AGOP computation uses the exact same training data
+    as used during the training process for accurate correlation analysis.
     """
     
     print(f"\n=== Starting Training with {optimizer_name.upper()} ===")
     print(f"Learning rate: {lr}")
     print(f"Epochs: {num_epochs}")
     print(f"Analysis interval: {val_interval}")
-    print(f"Memory-optimized for Colab environment")
+    print(f"AGOP Analysis: Using ALL training samples for accurate correlation")
     
     # Setup experiment directory
     exp_dir = setup_experiment_dir(optimizer_name)
@@ -245,9 +255,9 @@ def train_with_analysis_colab(optimizer_name, lr, num_epochs=500, val_interval=2
             torch.save(d, model_path)
             net.to(device)
             
-            # Compute AGOP/NFM correlations with memory optimization
-            print("Computing AGOP/NFM correlations...")
-            correlations = compute_agop_nfm_correlation_optimized(model_path, layer_indices)
+            # Compute AGOP/NFM correlations using ALL training samples
+            print("Computing AGOP/NFM correlations using ALL training samples...")
+            correlations = compute_agop_nfm_correlation_optimized(model_path, layer_indices, max_samples=None)
             
             # Store results
             results['epochs'].append(epoch)
@@ -419,10 +429,11 @@ def run_all_optimizers():
     return results_summary
 
 if __name__ == "__main__":
-    print("=== Colab-Optimized Training and AGOP Analysis ===")
+    print("=== Training and AGOP Analysis with ALL Training Samples ===")
     print("This script will train models with SGD, Adam, and Muon optimizers")
     print("Each training: 500 epochs, analysis every 20 epochs")
-    print("Memory-optimized for Colab environment\n")
+    print("IMPORTANT: AGOP analysis uses ALL training samples for accurate correlation")
+    print("(Memory usage will be higher but ensures theoretical correctness)\n")
     
     # Run all optimizers
     results_summary = run_all_optimizers()
