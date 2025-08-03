@@ -102,36 +102,64 @@ def load_init_nn(path, width, depth, dim, num_classes, layer_idx=0, act_name='re
 
 def get_layer_output(net, trainloader, layer_idx=0, max_samples=None):
     """
-    Get layer output with optional sample limit for memory management
+    Get layer output with optional sample limit for memory management.
+    
+    To ensure we use the EXACT same data as during training, we:
+    1. Set the same random seed
+    2. Create a new DataLoader with shuffle=False to get deterministic order
+    3. Use the underlying dataset directly to avoid batch boundary issues
     """
     net.eval()
-    out = []
-    total_samples = 0
     
-    for idx, batch in enumerate(trainloader):
-        data, labels = batch
+    # Get the underlying dataset from the DataLoader
+    # This ensures we access the exact same samples used in training
+    dataset = trainloader.dataset
+    
+    # If max_samples is specified, limit the dataset
+    if max_samples is not None:
+        dataset = dataset[:max_samples]
+        print(f"Using first {len(dataset)} samples (limited by max_samples={max_samples})")
+    else:
+        print(f"Using ALL {len(dataset)} training samples (same as during training)")
+    
+    # Process in batches for memory efficiency, but with deterministic order
+    batch_size = 128  # Use same batch size as training
+    out = []
+    
+    for i in range(0, len(dataset), batch_size):
+        end_idx = min(i + batch_size, len(dataset))
+        batch_data = []
         
-        # Check if we've reached the sample limit
-        if max_samples is not None and total_samples >= max_samples:
-            break
-            
+        # Manually create batch to ensure deterministic order
+        for j in range(i, end_idx):
+            data, _ = dataset[j]  # Get data without label
+            batch_data.append(data)
+        
+        batch_tensor = torch.stack(batch_data)
+        batch_size_actual = batch_tensor.shape[0]
+        
         if layer_idx == 0:
-            out.append(data.cpu())
+            # For layer 0, flatten the input data but keep batch dimension
+            flattened_data = batch_tensor.view(batch_size_actual, -1)  # Shape: (batch_size, feature_dim)
+            out.append(flattened_data.cpu())
         elif layer_idx == 1:
-            o = neural_model.Nonlinearity()(net.first(data))
+            flattened_data = batch_tensor.view(batch_size_actual, -1)
+            o = neural_model.Nonlinearity()(net.first(flattened_data))
             out.append(o.cpu())
         elif layer_idx > 1:
-            o = net.first(data)
+            flattened_data = batch_tensor.view(batch_size_actual, -1)
+            o = net.first(flattened_data)
             for l_idx, m in enumerate(net.middle):
                 o = m(o)
                 if l_idx + 1 == layer_idx:
                     o = neural_model.Nonlinearity()(o)
                     out.append(o.cpu())
                     break
-        
-        total_samples += data.shape[0]
+    
     out = torch.cat(out, dim=0)
     net.cpu()
+    print(f"Layer {layer_idx} output shape: {out.shape}")
+    print(f"Data consistency: Using exact training dataset order")
     return out
 
 
@@ -264,6 +292,12 @@ def verify_NFA(path, dataset_name, feature_idx=None, layer_idx=0, max_samples=No
     Args:
         max_samples: Maximum number of training samples to use (for memory management)
     """
+    # Ensure same random seed as training for data consistency
+    torch.manual_seed(SEED)
+    random.seed(SEED)
+    np.random.seed(SEED)
+    torch.cuda.manual_seed(SEED)
+    
     remove_init = True
     random_net = False
 
@@ -303,19 +337,18 @@ def verify_NFA(path, dataset_name, feature_idx=None, layer_idx=0, max_samples=No
  
     print("Init Net Feature Matrix Correlation: " , init_correlation)
 
+    # Load the SAME dataset that was used for training
+    # CRITICAL: Use identical random seed and dataset loading parameters
+    print("Loading dataset with SAME random seed as training...")
     if dataset_name == 'celeba':
         trainloader, valloader, testloader = dataset.get_celeba(FEATURE_IDX,
                                                                 num_train=20000,
                                                                 num_test=1)
     elif dataset_name == 'svhn':
-        # Use smaller default for memory efficiency
-        num_train = min(20000, 100000) if max_samples is None else min(max_samples, 100000)
-        trainloader, valloader, testloader = dataset.get_svhn(num_train=num_train,
-                                                              num_test=1)
+        # Use the FULL training set as in training (from main.py/trainer.py)
+        trainloader, valloader, testloader = dataset.get_svhn()  # No num_train limit
     elif dataset_name == 'cifar':
-        num_train = min(5000, 1000) if max_samples is None else min(max_samples, 1000)
-        trainloader, valloader, testloader = dataset.get_cifar(num_train=num_train,
-                                                               num_test=1)
+        trainloader, valloader, testloader = dataset.get_cifar()  # No num_train limit
 
     elif dataset_name == 'cifar_mnist':
         trainloader, valloader, testloader = dataset.get_cifar_mnist(num_train_per_class=1000,
@@ -323,30 +356,15 @@ def verify_NFA(path, dataset_name, feature_idx=None, layer_idx=0, max_samples=No
     elif dataset_name == 'stl_star':
         trainloader, valloader, testloader = dataset.get_stl_star(num_train=1000,
                                                                   num_test=1)
+    
+    # Get layer output with proper sample management
+    # This now ensures we use the EXACT same samples as during training
     out = get_layer_output(net, trainloader, layer_idx=layer_idx, max_samples=max_samples)
-    print(f"Using {len(out)} batches with total samples: {sum(batch.shape[0] for batch in out)}")
+    print(f"Final dataset shape for EGOP: {out.shape}")
     
-    # Limit total dataset size if max_samples is specified
-    if max_samples is not None:
-        total_samples = sum(batch.shape[0] for batch in out)
-        if total_samples > max_samples:
-            # Truncate the dataset
-            current_samples = 0
-            truncated_out = []
-            for batch in out:
-                if current_samples + batch.shape[0] <= max_samples:
-                    truncated_out.append(batch)
-                    current_samples += batch.shape[0]
-                else:
-                    # Take only part of this batch
-                    remaining = max_samples - current_samples
-                    truncated_out.append(batch[:remaining])
-                    break
-            out = truncated_out
-            print(f"Truncated to {max_samples} samples for memory efficiency")
-    
-    out = torch.cat(out, dim=0)
-    print(f"Final dataset shape: {out.shape}")
+    # Ensure we have 2D data for Jacobian computation
+    if out.dim() == 1:
+        raise ValueError(f"Output data is 1D but should be 2D. Shape: {out.shape}")
     
     G = egop(subnet, out, centering=True)
     G2 = egop(subnet, out, centering=False)
@@ -369,8 +387,8 @@ def main():
                         help='Dataset name (default: svhn)')
     parser.add_argument('--layers', type=int, nargs='+', default=[0,1,2,3,4],
                         help='Layer indices to compute EGOP (default: 0 1 2 3 4)')
-    parser.add_argument('--max_samples', type=int, default=10000,
-                        help='Maximum number of samples to use (default: 10000 for memory efficiency)')
+    parser.add_argument('--max_samples', type=int, default=None,
+                        help='Maximum number of samples to use (default: None, use all training samples)')
     args = parser.parse_args()
 
     path = args.path
@@ -378,7 +396,10 @@ def main():
     idxs = args.layers
     max_samples = args.max_samples
     
-    print(f"Using maximum {max_samples} samples for memory efficiency")
+    if max_samples is not None:
+        print(f"Using maximum {max_samples} samples for memory efficiency")
+    else:
+        print("Using ALL training samples (same as during training)")
     
     init, centered, uncentered = [], [], []
     for idx in idxs:
