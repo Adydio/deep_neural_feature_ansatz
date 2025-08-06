@@ -63,8 +63,14 @@ def load_model_at_epoch(model_dir, epoch):
     if matching_files:
         return matching_files[0]  # Return the first match
     
-    # Also try looking in models subdirectory with new format
+    # Also try looking in models subdirectory with new format (colon version)
     pattern = os.path.join(model_dir, 'models', f'model_epoch_{epoch}:*:nn.pth')
+    matching_files = glob.glob(pattern)
+    if matching_files:
+        return matching_files[0]
+    
+    # Try underscore format: model_epoch_X_dataset_width_W_depth_D_act_A_nn.pth
+    pattern = os.path.join(model_dir, 'models', f'model_epoch_{epoch}_*_nn.pth')
     matching_files = glob.glob(pattern)
     if matching_files:
         return matching_files[0]
@@ -123,7 +129,11 @@ def compute_gradient_matrix(net, trainloader, layer_idx, max_samples=None):
             batch_labels.append(label)
         
         batch_tensor = torch.stack(batch_data).to(device)
-        batch_labels = torch.tensor(batch_labels).to(device)
+        # Handle labels properly - they might already be tensors
+        if isinstance(batch_labels[0], torch.Tensor):
+            batch_labels = torch.stack(batch_labels).to(device)
+        else:
+            batch_labels = torch.tensor(batch_labels).to(device)
         batch_size_actual = batch_tensor.shape[0]
         
         # Forward pass to get layer activation
@@ -150,18 +160,18 @@ def compute_gradient_matrix(net, trainloader, layer_idx, max_samples=None):
             output = net.first(h_i)
             for layer in net.middle:
                 output = layer(output)
-            output = net.output(output)
+            output = net.last(output)
         elif layer_idx == 1:
             output = h_i
             for layer in net.middle:
                 output = layer(output)
-            output = net.output(output)
+            output = net.last(output)
         else:
             output = h_i
             remaining_layers = net.middle[layer_idx-1:]
             for layer in remaining_layers:
                 output = layer(output)
-            output = net.output(output)
+            output = net.last(output)
         
         # Compute loss
         if len(batch_labels.shape) == 1 and output.shape[1] > 1:
@@ -212,9 +222,9 @@ def compute_matrix_similarities(model_path, layer_indices, max_samples=None):
     # Load model and parse config
     filename = os.path.basename(model_path)
     
-    # Parse config from new format: model_epoch_X:dataset:width:W:depth:D:act:A:nn.pth
+    # Parse config from filename
     if ':' in filename and filename.endswith('.pth'):
-        # New format: extract config from filename
+        # New format: model_epoch_X:dataset:width:W:depth:D:act:A:nn.pth
         parts = filename.replace('.pth', '').split(':')
         dataset_name = parts[1] if len(parts) > 1 else 'svhn'
         
@@ -225,6 +235,23 @@ def compute_matrix_similarities(model_path, layer_indices, max_samples=None):
         
         for i in range(len(parts)):
             if parts[i] == 'width' and i + 1 < len(parts):
+                width = int(parts[i + 1])
+            elif parts[i] == 'depth' and i + 1 < len(parts):
+                depth = int(parts[i + 1])
+            elif parts[i] == 'act' and i + 1 < len(parts):
+                act_name = parts[i + 1]
+    elif '_' in filename and filename.endswith('.pth'):
+        # Underscore format: model_epoch_X_dataset_width_W_depth_D_act_A_nn.pth
+        parts = filename.replace('.pth', '').split('_')
+        dataset_name = 'svhn'  # default
+        width = 1024  # default
+        depth = 5     # default  
+        act_name = 'relu'  # default
+        
+        for i in range(len(parts)):
+            if parts[i] in ['svhn', 'cifar']:
+                dataset_name = parts[i]
+            elif parts[i] == 'width' and i + 1 < len(parts):
                 width = int(parts[i + 1])
             elif parts[i] == 'depth' and i + 1 < len(parts):
                 depth = int(parts[i + 1])
