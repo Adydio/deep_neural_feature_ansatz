@@ -281,10 +281,20 @@ def compute_matrix_similarities(model_path, layer_indices, max_samples=None):
             sim_GM = correlate(G_i, M_i)  # G_i vs M_i  
             sim_HM = correlate(H_i, M_i)  # H_i vs M_i
             
-            # Convert to Python scalars safely
-            sim_GH_val = sim_GH.item() if isinstance(sim_GH, torch.Tensor) else float(sim_GH)
-            sim_GM_val = sim_GM.item() if isinstance(sim_GM, torch.Tensor) else float(sim_GM)
-            sim_HM_val = sim_HM.item() if isinstance(sim_HM, torch.Tensor) else float(sim_HM)
+            # Convert to Python scalars safely - handle different tensor shapes
+            def safe_scalar_conversion(tensor_val):
+                if isinstance(tensor_val, torch.Tensor):
+                    if tensor_val.numel() == 1:
+                        return tensor_val.item()
+                    else:
+                        # If tensor has multiple elements, take the first one or handle appropriately
+                        return tensor_val.flatten()[0].item()
+                else:
+                    return float(tensor_val)
+            
+            sim_GH_val = safe_scalar_conversion(sim_GH)
+            sim_GM_val = safe_scalar_conversion(sim_GM)
+            sim_HM_val = safe_scalar_conversion(sim_HM)
             
             similarities[layer_idx] = {
                 'G_H': sim_GH_val,
