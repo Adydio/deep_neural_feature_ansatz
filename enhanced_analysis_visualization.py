@@ -390,12 +390,19 @@ def create_enhanced_analysis_plot(model_dir, output_dir):
         row, col = plot_positions[i]
         ax1 = axes[row, col]
         
-        # Primary y-axis: Training Loss
-        losses = results['train_losses'][layer_idx]
-        val_losses = results['val_losses'][layer_idx]
+        # Primary y-axis: Training Loss (use overall training loss, not per-layer)
+        if isinstance(results['train_losses'], list):
+            # Single training loss array for all layers
+            train_losses = results['train_losses']
+            val_losses = results.get('val_losses', results['train_losses'])  # Fallback to train if no val
+        else:
+            # Per-layer training losses (old format)
+            train_losses = results['train_losses'][layer_idx]
+            val_losses = results['val_losses'][layer_idx]
         
-        ax1.plot(epochs, losses, 'b-', label='Train Loss', linewidth=2, marker='o', markersize=4)
-        ax1.plot(epochs, val_losses, 'r-', label='Val Loss', linewidth=2, marker='s', markersize=4)
+        ax1.plot(epochs, train_losses, 'b-', label='Train Loss', linewidth=2, marker='o', markersize=4)
+        if 'val_losses' in results:
+            ax1.plot(epochs, val_losses, 'r-', label='Val Loss', linewidth=2, marker='s', markersize=4)
         ax1.set_xlabel('Epoch')
         ax1.set_ylabel('Loss', color='black')
         ax1.tick_params(axis='y', labelcolor='black')
@@ -404,7 +411,13 @@ def create_enhanced_analysis_plot(model_dir, output_dir):
         ax2 = ax1.twinx()
         
         # Original AGOP/NFM correlation
-        correlations = results['layer_correlations'][layer_idx]
+        if isinstance(results['layer_correlations'], dict):
+            # New format: layer_correlations is a dict with string keys
+            correlations = results['layer_correlations'][str(layer_idx)]
+        else:
+            # Old format: layer_correlations is a list indexed by layer
+            correlations = results['layer_correlations'][layer_idx]
+        
         ax2.plot(epochs, correlations, 'g-', label='AGOP/NFM Corr', linewidth=2, marker='^', markersize=4)
         
         # New matrix similarities
