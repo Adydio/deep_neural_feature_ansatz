@@ -50,10 +50,26 @@ sns.set_palette("husl")
 
 def load_model_at_epoch(model_dir, epoch):
     """Load model at specific epoch"""
+    # Try the original format first
     model_path = os.path.join(model_dir, 'models', f'model_epoch_{epoch}.pt')
-    if not os.path.exists(model_path):
-        return None
-    return model_path
+    if os.path.exists(model_path):
+        return model_path
+    
+    # Try the new cloud format with pattern: model_epoch_X:dataset:width:W:depth:D:act:A:nn.pth
+    # Look for any file in the model_dir that matches the pattern
+    import glob
+    pattern = os.path.join(model_dir, f'model_epoch_{epoch}:*:nn.pth')
+    matching_files = glob.glob(pattern)
+    if matching_files:
+        return matching_files[0]  # Return the first match
+    
+    # Also try looking in models subdirectory with new format
+    pattern = os.path.join(model_dir, 'models', f'model_epoch_{epoch}:*:nn.pth')
+    matching_files = glob.glob(pattern)
+    if matching_files:
+        return matching_files[0]
+    
+    return None
 
 def compute_representation_matrix(net, trainloader, layer_idx, max_samples=None):
     """
@@ -181,18 +197,37 @@ def compute_matrix_similarities(model_path, layer_indices, max_samples=None):
     """
     Compute pairwise cosine similarities between G_i, H_i, M_i matrices
     """
-    # Load model
-    path_parts = model_path.split('/')
-    config_str = path_parts[-2] if len(path_parts) > 1 else path_parts[-1]
+    # Load model and parse config
+    filename = os.path.basename(model_path)
     
-    # Parse config
-    width, depth, act_name = read_configs(config_str)
-    
+    # Parse config from new format: model_epoch_X:dataset:width:W:depth:D:act:A:nn.pth
+    if ':' in filename and filename.endswith('.pth'):
+        # New format: extract config from filename
+        parts = filename.replace('.pth', '').split(':')
+        dataset_name = parts[1] if len(parts) > 1 else 'svhn'
+        
+        # Extract width, depth, act from the parts
+        width = 1024  # default
+        depth = 5     # default  
+        act_name = 'relu'  # default
+        
+        for i in range(len(parts)):
+            if parts[i] == 'width' and i + 1 < len(parts):
+                width = int(parts[i + 1])
+            elif parts[i] == 'depth' and i + 1 < len(parts):
+                depth = int(parts[i + 1])
+            elif parts[i] == 'act' and i + 1 < len(parts):
+                act_name = parts[i + 1]
+    else:
+        # Fallback to original parsing
+        path_parts = model_path.split('/')
+        config_str = path_parts[-2] if len(path_parts) > 1 else path_parts[-1]
+        width, depth, act_name = read_configs(config_str)
+        dataset_name = 'svhn'  # Default dataset
+        if 'cifar' in config_str.lower():
+            dataset_name = 'cifar'
+
     # Setup dataset (same as training)
-    dataset_name = 'svhn'  # Default dataset
-    if 'cifar' in config_str.lower():
-        dataset_name = 'cifar'
-    
     if dataset_name == 'svhn':
         NUM_CLASSES = 10
         SIZE = 32
