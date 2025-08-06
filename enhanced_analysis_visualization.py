@@ -49,27 +49,37 @@ plt.style.use('seaborn-v0_8')
 sns.set_palette("husl")
 
 def load_model_at_epoch(model_dir, epoch):
-    """Load model at specific epoch"""
-    # Try the original format first
+    """Load model at specific epoch - supports multiple naming patterns"""
+    import glob
+    
+    # Pattern 1: Simple format - model_epoch_X.pth (NEW SUPPORT)
+    model_path = os.path.join(model_dir, f'model_epoch_{epoch}.pth')
+    if os.path.exists(model_path):
+        return model_path
+    
+    # Pattern 2: Simple format in models subdirectory - model_epoch_X.pth (NEW SUPPORT)
+    model_path = os.path.join(model_dir, 'models', f'model_epoch_{epoch}.pth')
+    if os.path.exists(model_path):
+        return model_path
+    
+    # Pattern 3: Original format - model_epoch_X.pt
     model_path = os.path.join(model_dir, 'models', f'model_epoch_{epoch}.pt')
     if os.path.exists(model_path):
         return model_path
     
-    # Try the new cloud format with pattern: model_epoch_X:dataset:width:W:depth:D:act:A:nn.pth
-    # Look for any file in the model_dir that matches the pattern
-    import glob
+    # Pattern 4: Colon format - model_epoch_X:dataset:width:W:depth:D:act:A:nn.pth
     pattern = os.path.join(model_dir, f'model_epoch_{epoch}:*:nn.pth')
     matching_files = glob.glob(pattern)
     if matching_files:
         return matching_files[0]  # Return the first match
     
-    # Also try looking in models subdirectory with new format (colon version)
+    # Pattern 5: Colon format in models subdirectory
     pattern = os.path.join(model_dir, 'models', f'model_epoch_{epoch}:*:nn.pth')
     matching_files = glob.glob(pattern)
     if matching_files:
         return matching_files[0]
     
-    # Try underscore format: model_epoch_X_dataset_width_W_depth_D_act_A_nn.pth
+    # Pattern 6: Underscore format - model_epoch_X_dataset_width_W_depth_D_act_A_nn.pth
     pattern = os.path.join(model_dir, 'models', f'model_epoch_{epoch}_*_nn.pth')
     matching_files = glob.glob(pattern)
     if matching_files:
@@ -257,6 +267,14 @@ def compute_matrix_similarities(model_path, layer_indices, max_samples=None):
                 depth = int(parts[i + 1])
             elif parts[i] == 'act' and i + 1 < len(parts):
                 act_name = parts[i + 1]
+    elif filename.startswith('model_epoch_') and filename.endswith('.pth'):
+        # Simple format: model_epoch_X.pth (NEW SUPPORT)
+        # Use default values since no config info in filename
+        dataset_name = 'svhn'  # Default dataset
+        width = 1024  # Default width
+        depth = 5     # Default depth  
+        act_name = 'relu'  # Default activation
+        print(f"Simple format detected for {filename}, using defaults: dataset={dataset_name}, width={width}, depth={depth}, act={act_name}")
     else:
         # Fallback to original parsing
         path_parts = model_path.split('/')
