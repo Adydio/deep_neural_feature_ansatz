@@ -77,8 +77,14 @@ def compute_representation_matrix(net, trainloader, layer_idx, max_samples=None)
     """
     print(f"Computing representation matrix H_{layer_idx}...")
     
+    # Move network to CPU to ensure consistency
+    net = net.cpu()
+    
     # Get layer outputs (post-activation)
     layer_outputs = get_layer_output(net, trainloader, layer_idx=layer_idx, max_samples=max_samples)
+    
+    # Ensure outputs are on CPU
+    layer_outputs = layer_outputs.cpu()
     
     # Compute H_i = E[h_i h_i^T]
     H = torch.mm(layer_outputs.T, layer_outputs) / layer_outputs.shape[0]
@@ -171,11 +177,14 @@ def compute_gradient_matrix(net, trainloader, layer_idx, max_samples=None):
         
         gradients.append(g_i.detach().cpu())
     
-    # Concatenate all gradients
-    all_gradients = torch.cat(gradients, dim=0)
+    # Concatenate all gradients (ensure all on CPU)
+    all_gradients = torch.cat(gradients, dim=0).cpu()
     
     # Compute G_i = E[g_i g_i^T]
     G = torch.mm(all_gradients.T, all_gradients) / all_gradients.shape[0]
+    
+    # Move network back to CPU for consistency
+    net = net.cpu()
     
     return G
 
@@ -184,6 +193,9 @@ def compute_weight_matrix(net, layer_idx):
     Compute M_i := W_i^T W_i (weight matrix, same as NFM)
     """
     print(f"Computing weight matrix M_{layer_idx}...")
+    
+    # Ensure network is on CPU
+    net = net.cpu()
     
     params = list(net.parameters())
     W_i = params[layer_idx].data.cpu()
@@ -259,21 +271,31 @@ def compute_matrix_similarities(model_path, layer_indices, max_samples=None):
             G_i = compute_gradient_matrix(net, trainloader, layer_idx, max_samples)
             M_i = compute_weight_matrix(net, layer_idx)
             
+            # Ensure all matrices are on CPU and properly formatted
+            H_i = H_i.cpu().float()
+            G_i = G_i.cpu().float()
+            M_i = M_i.cpu().float()
+            
             # Compute pairwise cosine similarities
-            sim_GH = correlate(G_i, H_i).item()  # G_i vs H_i
-            sim_GM = correlate(G_i, M_i).item()  # G_i vs M_i  
-            sim_HM = correlate(H_i, M_i).item()  # H_i vs M_i
+            sim_GH = correlate(G_i, H_i)  # G_i vs H_i
+            sim_GM = correlate(G_i, M_i)  # G_i vs M_i  
+            sim_HM = correlate(H_i, M_i)  # H_i vs M_i
+            
+            # Convert to Python scalars safely
+            sim_GH_val = sim_GH.item() if isinstance(sim_GH, torch.Tensor) else float(sim_GH)
+            sim_GM_val = sim_GM.item() if isinstance(sim_GM, torch.Tensor) else float(sim_GM)
+            sim_HM_val = sim_HM.item() if isinstance(sim_HM, torch.Tensor) else float(sim_HM)
             
             similarities[layer_idx] = {
-                'G_H': sim_GH,
-                'G_M': sim_GM,
-                'H_M': sim_HM
+                'G_H': sim_GH_val,
+                'G_M': sim_GM_val,
+                'H_M': sim_HM_val
             }
             
             print(f"Layer {layer_idx} similarities:")
-            print(f"  G_i vs H_i: {sim_GH:.6f}")
-            print(f"  G_i vs M_i: {sim_GM:.6f}")
-            print(f"  H_i vs M_i: {sim_HM:.6f}")
+            print(f"  G_i vs H_i: {sim_GH_val:.6f}")
+            print(f"  G_i vs M_i: {sim_GM_val:.6f}")
+            print(f"  H_i vs M_i: {sim_HM_val:.6f}")
             
         except Exception as e:
             print(f"Error computing similarities for layer {layer_idx}: {e}")
