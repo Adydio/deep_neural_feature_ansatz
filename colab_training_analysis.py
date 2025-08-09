@@ -41,10 +41,51 @@ from verify_deep_NFA import (
     egop, correlate, read_configs, SEED
 )
 
-def setup_experiment_dir(optimizer_name):
+def get_dataset_info(dataset_name):
+    """Get dataset-specific information"""
+    dataset_configs = {
+        'svhn': {
+            'num_classes': 10,
+            'loader_func': lambda: dataset.get_svhn(),
+            'input_size': 32,
+            'channels': 3
+        },
+        'cifar': {
+            'num_classes': 10,
+            'loader_func': lambda: dataset.get_cifar(),
+            'input_size': 32,
+            'channels': 3
+        },
+        'cifar_mnist': {
+            'num_classes': 10,
+            'loader_func': lambda: dataset.get_cifar_mnist(),
+            'input_size': 32,
+            'channels': 3
+        },
+        'celeba': {
+            'num_classes': 2,
+            'loader_func': lambda: dataset.get_celeba(feature_idx=20),  # Use feature 20 (Male)
+            'input_size': 96,
+            'channels': 3
+        },
+        'stl_star': {
+            'num_classes': 2,
+            'loader_func': lambda: dataset.get_stl_star(),
+            'input_size': 96,
+            'channels': 3
+        }
+    }
+    
+    if dataset_name not in dataset_configs:
+        raise ValueError(f"Unsupported dataset: {dataset_name}. Supported datasets: {list(dataset_configs.keys())}")
+    
+    return dataset_configs[dataset_name]
+
+def setup_experiment_dir(optimizer_name, dataset_name='svhn'):
+def setup_experiment_dir(optimizer_name, dataset_name='svhn'):
     """Create experiment directory structure"""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    exp_dir = f"experiments/{optimizer_name}_{timestamp}"
+    exp_dir = f"experiments/{dataset_name}_{optimizer_name}_{timestamp}"
     
     os.makedirs(exp_dir, exist_ok=True)
     os.makedirs(f"{exp_dir}/models", exist_ok=True)
@@ -52,7 +93,7 @@ def setup_experiment_dir(optimizer_name):
     
     return exp_dir
 
-def compute_agop_nfm_correlation_optimized(model_path, layer_indices, max_samples=None, init_model_path=None):
+def compute_agop_nfm_correlation_optimized(model_path, layer_indices, max_samples=None, init_model_path=None, dataset_info=None):
     """
     AGOP vs NFM correlation computation using ALL training samples
     
@@ -76,25 +117,31 @@ def compute_agop_nfm_correlation_optimized(model_path, layer_indices, max_sample
     
     try:
         # Extract config from model path filename
-        # Expected format: model_epoch_X:svhn:width:1024:depth:5:act:relu:nn.pth
+        # Expected format: model_epoch_X:{dataset}:width:1024:depth:5:act:relu:nn.pth
         filename = os.path.basename(model_path)
         if ':' in filename:
             config_part = filename.split(':')[1:]  # Skip the epoch part
             config_str = ':'.join(config_part).replace('.pth', '')
         else:
             # Fallback: use default config
-            config_str = "svhn:width:1024:depth:5:act:relu:nn"
+            config_str = f"{dataset_info['name'] if dataset_info else 'svhn'}:width:1024:depth:5:act:relu:nn"
         
         width, depth, act_name = read_configs(config_str)
         
-        # Dataset parameters
-        NUM_CLASSES = 10
-        SIZE = 32
-        c = 3
-        dim = c * SIZE * SIZE
+        # Dataset parameters (use provided dataset_info or defaults)
+        if dataset_info:
+            NUM_CLASSES = dataset_info['num_classes']
+            SIZE = dataset_info['input_size']
+            c = dataset_info['channels']
+            trainloader, valloader, testloader = dataset_info['loader_func']()
+        else:
+            # Fallback to SVHN
+            NUM_CLASSES = 10
+            SIZE = 32
+            c = 3
+            trainloader, valloader, testloader = dataset.get_svhn()
         
-        # Load dataset
-        trainloader, valloader, testloader = dataset.get_svhn()
+        dim = c * SIZE * SIZE
         
         # Load initial model if provided for remove_init operation
         init_params = None
@@ -161,7 +208,7 @@ def compute_agop_nfm_correlation_optimized(model_path, layer_indices, max_sample
     
     return correlations
 
-def train_with_analysis_colab(optimizer_name, lr, num_epochs=500, val_interval=20):
+def train_with_analysis_colab(optimizer_name, lr, num_epochs=500, val_interval=20, dataset_name='svhn'):
     """
     Training with comprehensive AGOP analysis using ALL training samples
     
@@ -169,14 +216,19 @@ def train_with_analysis_colab(optimizer_name, lr, num_epochs=500, val_interval=2
     as used during the training process for accurate correlation analysis.
     """
     
-    print(f"\n=== Starting Training with {optimizer_name.upper()} ===")
+    print(f"\n=== Starting Training with {optimizer_name.upper()} on {dataset_name.upper()} ===")
     print(f"Learning rate: {lr}")
     print(f"Epochs: {num_epochs}")
+    print(f"Dataset: {dataset_name}")
     print(f"Analysis interval: {val_interval}")
     print(f"AGOP Analysis: Using ALL training samples for accurate correlation")
     
+    # Get dataset information
+    dataset_info = get_dataset_info(dataset_name)
+    dataset_info['name'] = dataset_name
+    
     # Setup experiment directory
-    exp_dir = setup_experiment_dir(optimizer_name)
+    exp_dir = setup_experiment_dir(optimizer_name, dataset_name)
     print(f"Experiment directory: {exp_dir}")
     
     # Set random seed
@@ -186,7 +238,7 @@ def train_with_analysis_colab(optimizer_name, lr, num_epochs=500, val_interval=2
     torch.cuda.manual_seed(SEED)
     
     # Load data
-    trainloader, valloader, testloader = dataset.get_svhn()
+    trainloader, valloader, testloader = dataset_info['loader_func']()
     
     # Get input dimension
     for batch in trainloader:
@@ -205,13 +257,14 @@ def train_with_analysis_colab(optimizer_name, lr, num_epochs=500, val_interval=2
         'width': 1024,
         'depth': 5,
         'act': 'relu',
-        'val_interval': val_interval
+        'val_interval': val_interval,
+        'dataset': dataset_name
     }
     
     # Create model
     net = neural_model.Net(dim, width=configs['width'],
                           depth=configs['depth'],
-                          num_classes=10,
+                          num_classes=dataset_info['num_classes'],
                           act_name=configs['act'])
     
     # Get device and setup
@@ -281,7 +334,7 @@ def train_with_analysis_colab(optimizer_name, lr, num_epochs=500, val_interval=2
             # Save model with config info in filename for easier parsing
             net.cpu()
             d = {'state_dict': trainer.get_clean_state_dict(net)}
-            model_filename = f'model_epoch_{epoch}:svhn:width:{configs["width"]}:depth:{configs["depth"]}:act:{configs["act"]}:nn.pth'
+            model_filename = f'model_epoch_{epoch}:{dataset_name}:width:{configs["width"]}:depth:{configs["depth"]}:act:{configs["act"]}:nn.pth'
             model_path = f'{exp_dir}/models/{model_filename}'
             torch.save(d, model_path)
             net.to(device)
@@ -290,7 +343,8 @@ def train_with_analysis_colab(optimizer_name, lr, num_epochs=500, val_interval=2
             print("Computing AGOP/NFM correlations using ALL training samples...")
             correlations = compute_agop_nfm_correlation_optimized(model_path, layer_indices, 
                                                                 max_samples=None, 
-                                                                init_model_path=init_model_path)
+                                                                init_model_path=init_model_path,
+                                                                dataset_info=dataset_info)
             
             # Store results
             results['epochs'].append(epoch)
@@ -313,12 +367,12 @@ def train_with_analysis_colab(optimizer_name, lr, num_epochs=500, val_interval=2
         json.dump(results, f, indent=2)
     
     # Generate plots
-    generate_plots_colab(results, exp_dir, optimizer_name)
+    generate_plots_colab(results, exp_dir, optimizer_name, dataset_name)
     
     print(f"\nTraining completed! Results saved in: {exp_dir}")
     return exp_dir, results
 
-def generate_plots_colab(results, exp_dir, optimizer_name):
+def generate_plots_colab(results, exp_dir, optimizer_name, dataset_name='svhn'):
     """Generate comprehensive visualization plots optimized for Colab"""
     
     print("Generating plots...")
@@ -329,7 +383,7 @@ def generate_plots_colab(results, exp_dir, optimizer_name):
     
     # Create subplots: 5 layers in a 2x3 grid
     fig, axes = plt.subplots(2, 3, figsize=(20, 12))
-    fig.suptitle(f'{optimizer_name.upper()} Training Analysis: Loss and AGOP/NFM Correlation', 
+    fig.suptitle(f'{optimizer_name.upper()} Training Analysis on {dataset_name.upper()}: Loss and AGOP/NFM Correlation', 
                  fontsize=18, fontweight='bold')
     
     # Flatten axes for easier indexing
@@ -400,7 +454,7 @@ def generate_plots_colab(results, exp_dir, optimizer_name):
     
     print(f"Plots saved in: {exp_dir}/plots/")
 
-def run_all_optimizers():
+def run_all_optimizers(dataset_name='svhn'):
     """Run training for all three optimizers"""
     
     optimizers = [
@@ -413,7 +467,7 @@ def run_all_optimizers():
     
     for optimizer_name, lr in optimizers:
         print(f"\n{'='*60}")
-        print(f"Running {optimizer_name.upper()} with lr={lr}")
+        print(f"Running {optimizer_name.upper()} with lr={lr} on {dataset_name.upper()}")
         print(f"{'='*60}")
         
         try:
@@ -421,7 +475,8 @@ def run_all_optimizers():
                 optimizer_name=optimizer_name,
                 lr=lr,
                 num_epochs=500,
-                val_interval=20
+                val_interval=20,
+                dataset_name=dataset_name
             )
             
             results_summary[optimizer_name] = {
@@ -458,15 +513,91 @@ def run_all_optimizers():
     
     return results_summary
 
+def run_single_optimizer(optimizer_name, lr, dataset_name='svhn', num_epochs=500, val_interval=20):
+    """Run training for a single optimizer"""
+    
+    print(f"\n{'='*60}")
+    print(f"Running {optimizer_name.upper()} with lr={lr} on {dataset_name.upper()}")
+    print(f"Epochs: {num_epochs}, Analysis interval: {val_interval}")
+    print(f"{'='*60}")
+    
+    try:
+        exp_dir, results = train_with_analysis_colab(
+            optimizer_name=optimizer_name,
+            lr=lr,
+            num_epochs=num_epochs,
+            val_interval=val_interval,
+            dataset_name=dataset_name
+        )
+        
+        print(f"\n{'='*60}")
+        print(f"TRAINING COMPLETE - {optimizer_name.upper()}")
+        print(f"{'='*60}")
+        print(f"Final Train Loss: {results['train_losses'][-1]:.6f}")
+        print(f"Final Val Loss: {results['val_losses'][-1]:.6f}")
+        print(f"Final Correlations:")
+        for layer_idx in range(5):
+            corr = results['layer_correlations'][layer_idx][-1]
+            print(f"  Layer {layer_idx}: {corr:.6f}")
+        print(f"Results saved in: {exp_dir}")
+        
+        return exp_dir, results
+        
+    except Exception as e:
+        print(f"Error training {optimizer_name}: {e}")
+        import traceback
+        traceback.print_exc()
+        return None, None
+
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Colab Training and AGOP Analysis')
+    parser.add_argument('--optimizer', type=str, choices=['sgd', 'adam', 'muon', 'all'], 
+                       default='all', help='Optimizer to use')
+    parser.add_argument('--lr', type=float, help='Learning rate (auto-set if not specified)')
+    parser.add_argument('--dataset', type=str, default='svhn', 
+                        help='Dataset to use for training (default: svhn). Options: svhn, cifar, cifar_mnist, celeba, stl_star')
+    parser.add_argument('--epochs', type=int, default=500, help='Number of training epochs (default: 500)')
+    parser.add_argument('--val_interval', type=int, default=20, help='Validation interval (default: 20)')
+    
+    args = parser.parse_args()
+    
     print("=== Training and AGOP Analysis with ALL Training Samples ===")
-    print("This script will train models with SGD, Adam, and Muon optimizers")
-    print("Each training: 500 epochs, analysis every 20 epochs")
+    print(f"Dataset: {args.dataset}")
+    print("This script will train models with comprehensive AGOP analysis")
+    print(f"Training: {args.epochs} epochs, analysis every {args.val_interval} epochs")
     print("IMPORTANT: AGOP analysis uses ALL training samples for accurate correlation")
     print("(Memory usage will be higher but ensures theoretical correctness)\n")
     
-    # Run all optimizers
-    results_summary = run_all_optimizers()
+    # Validate dataset
+    try:
+        dataset_info = get_dataset_info(args.dataset)
+        print(f"Dataset configuration:")
+        print(f"  Name: {args.dataset}")
+        print(f"  Classes: {dataset_info['num_classes']}")
+        print(f"  Input size: {dataset_info['input_size']}x{dataset_info['input_size']}")
+        print(f"  Channels: {dataset_info['channels']}\n")
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
     
-    print("\n=== ALL TRAINING COMPLETE ===")
-    print("Check the experiments/ directory for detailed results and plots.")
+    if args.optimizer == 'all':
+        # Run all optimizers
+        results_summary = run_all_optimizers(args.dataset)
+        
+        print("\n=== ALL TRAINING COMPLETE ===")
+        print("Check the experiments/ directory for detailed results and plots.")
+    else:
+        # Run single optimizer
+        if args.lr is None:
+            # Set default learning rates
+            default_lrs = {'sgd': 0.1, 'adam': 0.001, 'muon': 0.01}
+            lr = default_lrs[args.optimizer]
+        else:
+            lr = args.lr
+        
+        exp_dir, results = run_single_optimizer(
+            args.optimizer, lr, args.dataset, args.epochs, args.val_interval
+        )
+        
+        print("\n=== TRAINING COMPLETE ===")
+        print("Check the experiments/ directory for detailed results and plots.")
