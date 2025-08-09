@@ -15,6 +15,7 @@ import time
 import neural_model
 import numpy as np
 from sklearn.metrics import r2_score
+import os
 
 
 def clean_compiled_state_dict(state_dict):
@@ -153,10 +154,17 @@ def train_network(train_loader, val_loader, test_loader, num_classes,
     # Use MSE Loss (L2 loss)
     criterion = nn.MSELoss()
 
+    # Get save directory from configs or use default
+    save_dir = configs.get('exp_dir', 'saved_nns') if configs else 'saved_nns'
+    save_dir = os.path.join(save_dir, 'models') if configs and 'exp_dir' in configs else save_dir
+    
+    # Create save directory if it doesn't exist
+    os.makedirs(save_dir, exist_ok=True)
+
     d = {}
     d['state_dict'] = get_clean_state_dict(net)
     if name is not None:
-        torch.save(d, 'saved_nns/init_' + name + '.pth')
+        torch.save(d, os.path.join(save_dir, 'init_' + name + '.pth'))
 
     best_val_acc = 0
     best_test_acc = 0
@@ -191,7 +199,7 @@ def train_network(train_loader, val_loader, test_loader, num_classes,
                 d = {}
                 d['state_dict'] = get_clean_state_dict(net)
                 if name is not None:
-                    torch.save(d, 'saved_nns/' + name + '.pth')
+                    torch.save(d, os.path.join(save_dir, name + '.pth'))
                 net.to(device)
 
             if val_loss <= best_val_loss:
@@ -209,7 +217,7 @@ def train_network(train_loader, val_loader, test_loader, num_classes,
     net.cpu()
     d = {}
     d['state_dict'] = get_clean_state_dict(net)
-    torch.save(d, 'saved_nns/' + name + '_final.pth')
+    torch.save(d, os.path.join(save_dir, name + '_final.pth'))
     return best_val_acc, best_test_acc
 
 
