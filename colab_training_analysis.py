@@ -82,7 +82,6 @@ def get_dataset_info(dataset_name):
     return dataset_configs[dataset_name]
 
 def setup_experiment_dir(optimizer_name, dataset_name='svhn'):
-def setup_experiment_dir(optimizer_name, dataset_name='svhn'):
     """Create experiment directory structure"""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     exp_dir = f"experiments/{dataset_name}_{optimizer_name}_{timestamp}"
