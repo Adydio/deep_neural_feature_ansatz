@@ -66,14 +66,14 @@ def zeropower_via_newtonschulz5(G, steps=3, eps=1e-7):
     return X
 
 class Muon(torch.optim.Optimizer):
-    def __init__(self, params, lr=1e-3, momentum=0, nesterov=False):
+    def __init__(self, params, lr=1e-3, momentum=0, nesterov=False, weight_decay=0):
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
         if momentum < 0.0:
             raise ValueError(f"Invalid momentum value: {momentum}")
         if nesterov and momentum <= 0:
             raise ValueError("Nesterov momentum requires a momentum")
-        defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov)
+        defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov, weight_decay=weight_decay)
         super().__init__(params, defaults)
 
     def step(self):
@@ -94,6 +94,9 @@ class Muon(torch.optim.Optimizer):
 
                 p.data.mul_(len(p.data)**0.5 / p.data.norm()) # normalize the weight
                 update = zeropower_via_newtonschulz5(g.reshape(len(g), -1)).view(g.shape) # whiten the update
+                # weight decay
+                if group['weight_decay'] != 0:
+                    p.data.add_(p.data, alpha=-lr * group['weight_decay'])
                 p.data.add_(update, alpha=-lr) # take a step
 
 
