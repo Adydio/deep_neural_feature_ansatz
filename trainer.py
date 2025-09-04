@@ -106,7 +106,7 @@ def select_optimizer(name, lr, net, weight_decay):
     elif name == 'adam':
         return torch.optim.Adam(net.parameters(), lr=lr, weight_decay=weight_decay)
     elif name == 'muon':
-        return Muon(list(net.parameters()), lr=lr, momentum=0.6, nesterov=True)
+        return Muon(list(net.parameters()), lr=lr, momentum=0.6, nesterov=True, weight_decay=weight_decay)
     else:
         raise ValueError(f"Unknown optimizer: {name}")
 

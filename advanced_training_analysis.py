@@ -134,7 +134,7 @@ def compute_agop_nfm_correlation(model_path, layer_indices, max_samples=None, in
     
     return correlations
 
-def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max_samples=None):
+def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max_samples=None, weight_decay=0):
     """
     Train model with comprehensive analysis
     
@@ -174,7 +174,7 @@ def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max
     configs = {
         'num_epochs': num_epochs,
         'learning_rate': lr,
-        'weight_decay': 0,
+        'weight_decay': weight_decay,
         'init': 'default',
         'optimizer': optimizer_name,
         'freeze': False,
@@ -423,6 +423,8 @@ def main():
                         help='Validation/analysis interval (default: 20)')
     parser.add_argument('--max_samples', type=int, default=None,
                         help='Max samples for AGOP computation (memory management)')
+    parser.add_argument('--weight_decay', type=float, default=0,
+                        help='Weight decay (L2 regularization) factor (default: 0)')
     
     args = parser.parse_args()
     
