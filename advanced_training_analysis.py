@@ -29,10 +29,55 @@ from verify_deep_NFA import (
     egop, correlate, read_configs, SEED
 )
 
-def setup_experiment_dir(optimizer_name):
+def get_dataset_info(dataset_name):
+    """Get dataset-specific information including loss axis ranges for consistent plotting"""
+    dataset_configs = {
+        'svhn': {
+            'num_classes': 10,
+            'loader_func': dataset.get_svhn,
+            'input_size': 32,
+            'channels': 3,
+            'loss_ylim': (0, 0.1)  # Consistent loss range for SVHN across all optimizers
+        },
+        'cifar': {
+            'num_classes': 10,
+            'loader_func': dataset.get_cifar,
+            'input_size': 32,
+            'channels': 3,
+            'loss_ylim': (0, 0.15)  # Consistent loss range for CIFAR across all optimizers
+        },
+        'cifar_mnist': {
+            'num_classes': 10,
+            'loader_func': dataset.get_cifar_mnist,
+            'input_size': 32,
+            'channels': 3,
+            'loss_ylim': (0, 0.12)  # Consistent loss range for CIFAR-MNIST across all optimizers
+        },
+        'celeba': {
+            'num_classes': 2,
+            'loader_func': lambda: dataset.get_celeba(feature_idx=20),
+            'input_size': 96,
+            'channels': 3,
+            'loss_ylim': (0, 0.25)  # Consistent loss range for CelebA across all optimizers
+        },
+        'stl_star': {
+            'num_classes': 2,
+            'loader_func': dataset.get_stl_star,
+            'input_size': 96,
+            'channels': 3,
+            'loss_ylim': (0, 0.25)  # Consistent loss range for STL-Star across all optimizers
+        }
+    }
+    
+    if dataset_name not in dataset_configs:
+        raise ValueError(f"Unsupported dataset: {dataset_name}. Supported datasets: {list(dataset_configs.keys())}")
+    
+    return dataset_configs[dataset_name]
+
+def setup_experiment_dir(optimizer_name, dataset_name='svhn'):
     """Create experiment directory structure"""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    exp_dir = f"experiments/{optimizer_name}_{timestamp}"
+    exp_dir = f"experiments/{dataset_name}_{optimizer_name}_{timestamp}"
     
     os.makedirs(exp_dir, exist_ok=True)
     os.makedirs(f"{exp_dir}/models", exist_ok=True)
@@ -134,7 +179,7 @@ def compute_agop_nfm_correlation(model_path, layer_indices, max_samples=None, in
     
     return correlations
 
-def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max_samples=None, weight_decay=0):
+def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max_samples=None, weight_decay=0, dataset_name='svhn'):
     """
     Train model with comprehensive analysis
     
@@ -144,15 +189,16 @@ def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max
         num_epochs: total epochs
         val_interval: interval for saving and analysis
         max_samples: limit samples for AGOP computation (memory management)
+        dataset_name: dataset to use for training
     """
     
-    print(f"\n=== Starting Training with {optimizer_name.upper()} ===")
+    print(f"\n=== Starting Training with {optimizer_name.upper()} on {dataset_name.upper()} ===")
     print(f"Learning rate: {lr}")
     print(f"Epochs: {num_epochs}")
     print(f"Analysis interval: {val_interval}")
     
     # Setup experiment directory
-    exp_dir = setup_experiment_dir(optimizer_name)
+    exp_dir = setup_experiment_dir(optimizer_name, dataset_name)
     print(f"Experiment directory: {exp_dir}")
     
     # Set random seed
@@ -161,8 +207,20 @@ def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max
     np.random.seed(SEED)
     torch.cuda.manual_seed(SEED)
     
-    # Load data
-    trainloader, valloader, testloader = dataset.get_svhn()
+    # Get dataset info and load data
+    dataset_info = get_dataset_info(dataset_name)
+    if dataset_name == 'svhn':
+        trainloader, valloader, testloader = dataset.get_svhn()
+    elif dataset_name == 'cifar':
+        trainloader, valloader, testloader = dataset.get_cifar()
+    elif dataset_name == 'cifar_mnist':
+        trainloader, valloader, testloader = dataset.get_cifar_mnist()
+    elif dataset_name == 'celeba':
+        trainloader, valloader, testloader = dataset.get_celeba()
+    elif dataset_name == 'stl_star':
+        trainloader, valloader, testloader = dataset.get_stl_star()
+    else:
+        raise ValueError(f"Unsupported dataset: {dataset_name}")
     
     # Get input dimension
     for batch in trainloader:
@@ -294,15 +352,19 @@ def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max
         json.dump(results, f, indent=2)
     
     # Generate plots
-    generate_plots(results, exp_dir, optimizer_name)
+    generate_plots(results, exp_dir, optimizer_name, dataset_name)
     
     print(f"\nTraining completed! Results saved in: {exp_dir}")
     return exp_dir, results
 
-def generate_plots(results, exp_dir, optimizer_name):
+def generate_plots(results, exp_dir, optimizer_name, dataset_name='svhn'):
     """Generate comprehensive visualization plots"""
     
     print("Generating plots...")
+    
+    # Get dataset configuration for consistent plotting
+    dataset_info = get_dataset_info(dataset_name)
+    loss_ylim = dataset_info['loss_ylim']
     
     # Set up the plot style
     plt.style.use('default')
@@ -352,12 +414,8 @@ def generate_plots(results, exp_dir, optimizer_name):
         labels = [l.get_label() for l in lines]
         ax.legend(lines, labels, loc='upper right')
         
-        # Set reasonable y-limits
-        if len(train_losses) > 0:
-            loss_min = min(min(train_losses), min(val_losses))
-            loss_max = max(max(train_losses), max(val_losses))
-            loss_range = loss_max - loss_min
-            ax.set_ylim(loss_min - 0.1 * loss_range, loss_max + 0.1 * loss_range)
+        # Set loss y-limits to be consistent across optimizers for the same dataset
+        ax.set_ylim(loss_ylim[0], loss_ylim[1])
         
         # Set correlation y-axis to consistent 0-1 range for all layers
         ax2.set_ylim(0, 1)
@@ -415,6 +473,9 @@ def main():
     parser.add_argument('--optimizer', type=str, required=True, 
                         choices=['sgd', 'adam', 'muon'],
                         help='Optimizer to use')
+    parser.add_argument('--dataset', type=str, default='svhn',
+                        choices=['svhn', 'cifar', 'cifar_mnist', 'celeba', 'stl_star'],
+                        help='Dataset to use (default: svhn)')
     parser.add_argument('--lr', type=float, default=None,
                         help='Learning rate (default: auto-select based on optimizer)')
     parser.add_argument('--epochs', type=int, default=500,
@@ -440,7 +501,9 @@ def main():
         lr=args.lr,
         num_epochs=args.epochs,
         val_interval=args.val_interval,
-        max_samples=args.max_samples
+        max_samples=args.max_samples,
+        weight_decay=args.weight_decay,
+        dataset_name=args.dataset
     )
     
     print(f"\n=== Experiment Complete ===")
