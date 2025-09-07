@@ -104,7 +104,7 @@ def select_optimizer(name, lr, net, weight_decay):
     if name == 'sgd':
         return torch.optim.SGD(net.parameters(), lr=lr, weight_decay=weight_decay)
     elif name == 'adam':
-        return torch.optim.Adam(net.parameters(), lr=lr, weight_decay=weight_decay)
+        return torch.optim.AdamW(net.parameters(), lr=lr, weight_decay=weight_decay)
     elif name == 'muon':
         return Muon(list(net.parameters()), lr=lr, momentum=0.6, nesterov=True, weight_decay=weight_decay)
     else:
