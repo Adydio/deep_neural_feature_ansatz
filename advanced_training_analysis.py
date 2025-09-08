@@ -31,25 +31,31 @@ from verify_deep_NFA import (
 
 def initialize_all_layer_weights(net, depth, std=1e-4):
     """
-    Initialize ALL layer weights according to Gaussian distribution 
-    with mean 0 and specified standard deviation (default: 10^-4 = 0.0001)
+    Initialize layer weights: First layer with Gaussian distribution (mean=0, std=1e-4),
+    other layers with Kaiming initialization
     
     Args:
         net: The neural network
         depth: Network depth 
-        std: Standard deviation for Gaussian initialization (default: 1e-4)
+        std: Standard deviation for Gaussian initialization of first layer (default: 1e-4)
     """
     with torch.no_grad():
         layer_count = 0
         for name, param in net.named_parameters():
             if 'weight' in name and param.dim() == 2:  # Only Linear layer weights
-                # Initialize each layer with Gaussian(mean=0, std=std)
-                torch.nn.init.normal_(param, mean=0.0, std=std)
+                if layer_count == 0:
+                    # First layer: Gaussian initialization
+                    torch.nn.init.normal_(param, mean=0.0, std=std)
+                    print(f"Initialized layer {layer_count} ({name}) with Gaussian: mean={param.mean().item():.6f}, "
+                          f"std={param.std().item():.6f}, shape={param.shape}")
+                else:
+                    # Other layers: Kaiming initialization
+                    torch.nn.init.kaiming_normal_(param, mode='fan_in', nonlinearity='relu')
+                    print(f"Initialized layer {layer_count} ({name}) with Kaiming: mean={param.mean().item():.6f}, "
+                          f"std={param.std().item():.6f}, shape={param.shape}")
                 layer_count += 1
-                print(f"Initialized layer {layer_count-1} ({name}): mean={param.mean().item():.6f}, "
-                      f"std={param.std().item():.6f}, shape={param.shape}")
         
-        print(f"Total initialized layers: {layer_count}")
+        print(f"Total initialized layers: {layer_count} (1 Gaussian + {layer_count-1} Kaiming)")
 
 def get_dataset_info(dataset_name):
     """Get dataset-specific information including loss axis ranges for consistent plotting"""
@@ -546,7 +552,7 @@ def generate_plots(results, exp_dir, optimizer_name, dataset_name='svhn', config
         else:
             lr_str = f"lr{lr}"
         
-        base_filename = f"{dataset_name}_{optimizer_name}_{lr_str}_{wd_str}_ep{epochs}_int{val_interval}_w{width}_d{depth}_{act}_std1e-4"
+        base_filename = f"{dataset_name}_{optimizer_name}_{lr_str}_{wd_str}_ep{epochs}_int{val_interval}_w{width}_d{depth}_{act}_mixed_init"
     else:
         base_filename = f"{dataset_name}_{optimizer_name}_default_params"
     
@@ -561,7 +567,7 @@ def generate_plots(results, exp_dir, optimizer_name, dataset_name='svhn', config
     if configs:
         title = (f'{optimizer_name.upper()} Training Analysis: {dataset_name.upper()}\n'
                 f'LR={lr}, WD={weight_decay}, Epochs={epochs}, Interval={val_interval}, '
-                f'Arch=[{width}×{depth}], Act={act}, Init=Gaussian(0,1e-4)')
+                f'Arch=[{width}×{depth}], Act={act}, Init=Mixed(L0:Gauss(0,1e-4), L1+:Kaiming)')
     else:
         title = f'{optimizer_name.upper()} Training Analysis: Loss and AGOP/NFM Correlation'
     
@@ -647,7 +653,7 @@ def generate_plots(results, exp_dir, optimizer_name, dataset_name='svhn', config
         # Detailed title for individual layer plots
         if configs:
             layer_title = (f'{optimizer_name.upper()} Layer {layer_idx} - {dataset_name.upper()}\n'
-                          f'LR={lr}, WD={weight_decay}, Epochs={epochs}, Init=Gaussian(0,1e-4)')
+                          f'LR={lr}, WD={weight_decay}, Epochs={epochs}, Init=Mixed(L0:Gauss, L1+:Kaiming)')
         else:
             layer_title = f'{optimizer_name.upper()} - Layer {layer_idx} Analysis'
         
