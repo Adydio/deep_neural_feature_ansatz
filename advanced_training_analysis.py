@@ -29,15 +29,15 @@ from verify_deep_NFA import (
     egop, correlate, read_configs, SEED
 )
 
-def initialize_first_layer_weights(net, depth, std=1e-3):
+def initialize_first_layer_weights(net, depth, std=1e-4):
     """
     Initialize the first layer weights according to Gaussian distribution 
-    with mean 0 and specified standard deviation (default: 10e-4 = 0.001)
+    with mean 0 and specified standard deviation (default: 10^-4 = 0.0001)
     
     Args:
         net: The neural network
         depth: Network depth 
-        std: Standard deviation for Gaussian initialization (default: 1e-3)
+        std: Standard deviation for Gaussian initialization (default: 1e-4)
     """
     with torch.no_grad():
         # Find the first layer (input layer to first hidden layer)
@@ -398,8 +398,8 @@ def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max
                           act_name=configs['act'])
     
     # Initialize the first layer weights according to Gaussian distribution 
-    # with mean 0 and standard deviation 10e-4 = 0.001
-    initialize_first_layer_weights(net, configs['depth'], std=1e-3)
+    # with mean 0 and standard deviation 10^-4 = 0.0001
+    initialize_first_layer_weights(net, configs['depth'], std=1e-4)
     
     # Get device and setup
     device = trainer.get_best_device()
