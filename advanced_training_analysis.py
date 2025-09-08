@@ -85,7 +85,7 @@ def setup_experiment_dir(optimizer_name, dataset_name='svhn'):
     
     return exp_dir
 
-def compute_agop_nfm_correlation(model_path, layer_indices, max_samples=None, init_model_path=None):
+def compute_agop_nfm_correlation(model_path, layer_indices, max_samples=None, init_model_path=None, dataset_name='svhn'):
     """
     AGOP vs NFM correlation computation
     
@@ -94,14 +94,15 @@ def compute_agop_nfm_correlation(model_path, layer_indices, max_samples=None, in
         layer_indices: List of layer indices to analyze
         max_samples: limit samples for AGOP computation (memory management)
         init_model_path: Path to initial model (for remove_init operation)
+        dataset_name: dataset to use for AGOP computation
     
     Returns:
         dict: {layer_idx: correlation_value}
     """
     correlations = {}
     
-    # Extract model info from path
-    dataset_name = 'svhn'  # Fixed for this experiment
+    # Get dataset configuration
+    dataset_info = get_dataset_info(dataset_name)
     
     # Set random seed for consistency
     torch.manual_seed(SEED)
@@ -113,14 +114,25 @@ def compute_agop_nfm_correlation(model_path, layer_indices, max_samples=None, in
         # Read model config from path
         width, depth, act_name = read_configs(model_path)
         
-        # Dataset parameters
-        NUM_CLASSES = 10
-        SIZE = 32
-        c = 3
+        # Get dataset-specific parameters
+        NUM_CLASSES = dataset_info['num_classes']
+        SIZE = dataset_info['input_size']
+        c = dataset_info['channels']
         dim = c * SIZE * SIZE
         
-        # Load dataset
-        trainloader, valloader, testloader = dataset.get_svhn()
+        # Load correct dataset based on dataset_name
+        if dataset_name == 'svhn':
+            trainloader, valloader, testloader = dataset.get_svhn()
+        elif dataset_name == 'cifar':
+            trainloader, valloader, testloader = dataset.get_cifar()
+        elif dataset_name == 'cifar_mnist':
+            trainloader, valloader, testloader = dataset.get_cifar_mnist()
+        elif dataset_name == 'celeba':
+            trainloader, valloader, testloader = dataset.get_celeba()
+        elif dataset_name == 'stl_star':
+            trainloader, valloader, testloader = dataset.get_stl_star()
+        else:
+            raise ValueError(f"Unsupported dataset: {dataset_name}")
         
         # Load initial model if provided for remove_init operation
         init_params = None
@@ -245,7 +257,7 @@ def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max
     # Create model
     net = neural_model.Net(dim, width=configs['width'],
                           depth=configs['depth'],
-                          num_classes=10,
+                          num_classes=dataset_info['num_classes'],
                           act_name=configs['act'])
     
     # Get device and setup
@@ -317,8 +329,8 @@ def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max
             
             # Compute AGOP/NFM correlations
             print("Computing AGOP/NFM correlations...")
-            # Create a path string that read_configs can parse
-            config_path = f"svhn:width:{configs['width']}:depth:{configs['depth']}:act:{configs['act']}:nn"
+            # Create a path string that read_configs can parse - use actual dataset name
+            config_path = f"{dataset_name}:width:{configs['width']}:depth:{configs['depth']}:act:{configs['act']}:nn"
             temp_model_path = model_path.replace('.pth', f':{config_path}.pth')
             
             # Temporarily rename file to include config info
@@ -326,7 +338,8 @@ def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max
             
             try:
                 correlations = compute_agop_nfm_correlation(temp_model_path, layer_indices, 
-                                                           max_samples, init_model_path=init_model_path)
+                                                           max_samples, init_model_path=init_model_path,
+                                                           dataset_name=dataset_name)
             finally:
                 # Rename back
                 os.rename(temp_model_path, model_path)
