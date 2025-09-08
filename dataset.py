@@ -433,11 +433,20 @@ def load_openml_dataset(dataset_id, split_percentage=0.8, normalize=True, max_sa
     
     # Handle categorical features (encode as numerical)
     if categorical_indicator is not None and any(categorical_indicator):
-        # Encode categorical features
+        # Encode categorical features - fix FutureWarning by creating new DataFrame
         for i, is_cat in enumerate(categorical_indicator):
             if is_cat and i < X.shape[1]:  # Skip target column
                 le = LabelEncoder()
-                X.iloc[:, i] = le.fit_transform(X.iloc[:, i].astype(str))
+                # Get column data and encode it
+                column_data = X.iloc[:, i].copy()
+                if column_data.dtype.name == 'category':
+                    column_data = column_data.astype(str)
+                encoded_values = le.fit_transform(column_data.astype(str))
+                
+                # Replace the entire column with proper dtype conversion
+                X = X.copy()
+                X = X.astype(object)  # Convert to object type first to allow assignment
+                X.iloc[:, i] = encoded_values
     
     # Convert to numpy
     X = X.values.astype(np.float32)

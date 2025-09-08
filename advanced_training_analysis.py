@@ -91,11 +91,11 @@ def get_dataset_info(dataset_name):
             'type': 'tabular'
         },
         'covertype': {
-            'num_classes': 2,
+            'num_classes': 7,
             'loader_func': dataset.get_covertype,
             'input_size': 54,  # Forest cover type features
             'channels': 1,     # Not applicable for tabular
-            'loss_ylim': (0, 0.15),  # Binary classification
+            'loss_ylim': (0, 0.3),  # 7-class classification
             'type': 'tabular'
         },
         'pol': {
