@@ -503,13 +503,13 @@ def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max
     with open(f'{exp_dir}/results.json', 'w') as f:
         json.dump(results, f, indent=2)
     
-    # Generate plots
-    generate_plots(results, exp_dir, optimizer_name, dataset_name)
+    # Generate plots with configuration parameters
+    generate_plots(results, exp_dir, optimizer_name, dataset_name, configs)
     
     print(f"\nTraining completed! Results saved in: {exp_dir}")
     return exp_dir, results
 
-def generate_plots(results, exp_dir, optimizer_name, dataset_name='svhn'):
+def generate_plots(results, exp_dir, optimizer_name, dataset_name='svhn', configs=None):
     """Generate comprehensive visualization plots"""
     
     print("Generating plots...")
@@ -518,14 +518,54 @@ def generate_plots(results, exp_dir, optimizer_name, dataset_name='svhn'):
     dataset_info = get_dataset_info(dataset_name)
     loss_ylim = dataset_info['loss_ylim']
     
+    # Create detailed filename with all parameters
+    if configs:
+        lr = configs.get('learning_rate', 'unknown')
+        epochs = configs.get('num_epochs', 'unknown')
+        weight_decay = configs.get('weight_decay', 0)
+        width = configs.get('width', 1024)
+        depth = configs.get('depth', 5)
+        act = configs.get('act', 'relu')
+        val_interval = configs.get('val_interval', 20)
+        
+        # Format weight decay for filename (remove dots and scientific notation)
+        if weight_decay == 0:
+            wd_str = "wd0"
+        elif weight_decay >= 1e-3:
+            wd_str = f"wd{weight_decay:.3f}".replace('.', '_')
+        else:
+            # For very small weight decay, use scientific notation format
+            wd_str = f"wd{weight_decay:.0e}".replace('-', 'm').replace('+', 'p')
+        
+        # Format learning rate for filename
+        if isinstance(lr, float):
+            if lr >= 0.001:
+                lr_str = f"lr{lr:.3f}".replace('.', '_')
+            else:
+                lr_str = f"lr{lr:.0e}".replace('-', 'm').replace('+', 'p')
+        else:
+            lr_str = f"lr{lr}"
+        
+        base_filename = f"{dataset_name}_{optimizer_name}_{lr_str}_{wd_str}_ep{epochs}_int{val_interval}_w{width}_d{depth}_{act}_std1e-4"
+    else:
+        base_filename = f"{dataset_name}_{optimizer_name}_default_params"
+    
     # Set up the plot style
     plt.style.use('default')
     sns.set_palette("husl")
     
     # Create subplots: 5 layers in a 2x3 grid (with one empty subplot)
     fig, axes = plt.subplots(2, 3, figsize=(18, 12))
-    fig.suptitle(f'{optimizer_name.upper()} Training Analysis: Loss and AGOP/NFM Correlation', 
-                 fontsize=16, fontweight='bold')
+    
+    # Create detailed title with parameters
+    if configs:
+        title = (f'{optimizer_name.upper()} Training Analysis: {dataset_name.upper()}\n'
+                f'LR={lr}, WD={weight_decay}, Epochs={epochs}, Interval={val_interval}, '
+                f'Arch=[{width}×{depth}], Act={act}, Init=Gaussian(0,1e-4)')
+    else:
+        title = f'{optimizer_name.upper()} Training Analysis: Loss and AGOP/NFM Correlation'
+    
+    fig.suptitle(title, fontsize=14, fontweight='bold')
     
     # Flatten axes for easier indexing
     axes_flat = axes.flatten()
@@ -579,10 +619,10 @@ def generate_plots(results, exp_dir, optimizer_name, dataset_name='svhn'):
     # Adjust layout
     plt.tight_layout()
     
-    # Save plot
-    plot_path = f'{exp_dir}/plots/training_analysis.png'
+    # Save plot with detailed filename
+    plot_path = f'{exp_dir}/plots/{base_filename}_training_analysis.png'
     plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-    plt.savefig(f'{exp_dir}/plots/training_analysis.pdf', bbox_inches='tight')
+    plt.savefig(f'{exp_dir}/plots/{base_filename}_training_analysis.pdf', bbox_inches='tight')
     plt.close()
     
     # Also create individual plots for each layer
@@ -603,7 +643,15 @@ def generate_plots(results, exp_dir, optimizer_name, dataset_name='svhn'):
         ax.set_xlabel('Epoch')
         ax.set_ylabel('Loss', color='black')
         ax2.set_ylabel('AGOP/NFM Correlation', color='green')
-        ax.set_title(f'{optimizer_name.upper()} - Layer {layer_idx} Analysis', fontweight='bold')
+        
+        # Detailed title for individual layer plots
+        if configs:
+            layer_title = (f'{optimizer_name.upper()} Layer {layer_idx} - {dataset_name.upper()}\n'
+                          f'LR={lr}, WD={weight_decay}, Epochs={epochs}, Init=Gaussian(0,1e-4)')
+        else:
+            layer_title = f'{optimizer_name.upper()} - Layer {layer_idx} Analysis'
+        
+        ax.set_title(layer_title, fontweight='bold')
         
         ax.tick_params(axis='y', labelcolor='black')
         ax2.tick_params(axis='y', labelcolor='green')
@@ -615,10 +663,13 @@ def generate_plots(results, exp_dir, optimizer_name, dataset_name='svhn'):
         ax.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
         
         plt.tight_layout()
-        plt.savefig(f'{exp_dir}/plots/layer_{layer_idx}_analysis.png', dpi=300, bbox_inches='tight')
+        layer_plot_path = f'{exp_dir}/plots/{base_filename}_layer_{layer_idx}_analysis.png'
+        plt.savefig(layer_plot_path, dpi=300, bbox_inches='tight')
         plt.close()
     
     print(f"Plots saved in: {exp_dir}/plots/")
+    print(f"Main plot: {base_filename}_training_analysis.png")
+    print(f"Layer plots: {base_filename}_layer_{{0-4}}_analysis.png")
 
 def main():
     parser = argparse.ArgumentParser(description='Advanced Training and AGOP Analysis')
