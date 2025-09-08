@@ -32,45 +32,89 @@ from verify_deep_NFA import (
 def get_dataset_info(dataset_name):
     """Get dataset-specific information including loss axis ranges for consistent plotting"""
     dataset_configs = {
+        # Image datasets
         'svhn': {
             'num_classes': 10,
             'loader_func': dataset.get_svhn,
             'input_size': 32,
             'channels': 3,
-            'loss_ylim': (0, 0.1)  # Consistent loss range for SVHN across all optimizers
+            'loss_ylim': (0, 0.1),  # Consistent loss range for SVHN across all optimizers
+            'type': 'image'
         },
         'cifar': {
             'num_classes': 10,
             'loader_func': dataset.get_cifar,
             'input_size': 32,
             'channels': 3,
-            'loss_ylim': (0, 0.15)  # Consistent loss range for CIFAR across all optimizers
+            'loss_ylim': (0, 0.15),  # Consistent loss range for CIFAR across all optimizers
+            'type': 'image'
         },
         'cifar_mnist': {
             'num_classes': 10,
             'loader_func': dataset.get_cifar_mnist,
             'input_size': 32,
             'channels': 3,
-            'loss_ylim': (0, 0.12)  # Consistent loss range for CIFAR-MNIST across all optimizers
+            'loss_ylim': (0, 0.12),  # Consistent loss range for CIFAR-MNIST across all optimizers
+            'type': 'image'
         },
         'celeba': {
             'num_classes': 2,
             'loader_func': lambda: dataset.get_celeba(feature_idx=20),
             'input_size': 96,
             'channels': 3,
-            'loss_ylim': (0, 0.25)  # Consistent loss range for CelebA across all optimizers
+            'loss_ylim': (0, 0.25),  # Consistent loss range for CelebA across all optimizers
+            'type': 'image'
         },
         'stl_star': {
             'num_classes': 2,
             'loader_func': dataset.get_stl_star,
             'input_size': 96,
             'channels': 3,
-            'loss_ylim': (0, 0.25)  # Consistent loss range for STL-Star across all optimizers
+            'loss_ylim': (0, 0.25),  # Consistent loss range for STL-Star across all optimizers
+            'type': 'image'
+        },
+        # Tabular datasets
+        'breast_cancer': {
+            'num_classes': 2,
+            'loader_func': dataset.get_breast_cancer,
+            'input_size': 30,  # 30 features
+            'channels': 1,     # Not applicable for tabular
+            'loss_ylim': (0, 0.2),  # Binary classification
+            'type': 'tabular'
+        },
+        'wine': {
+            'num_classes': 3,
+            'loader_func': dataset.get_wine,
+            'input_size': 13,  # 13 features
+            'channels': 1,     # Not applicable for tabular
+            'loss_ylim': (0, 0.3),  # 3-class classification
+            'type': 'tabular'
+        },
+        'california_housing': {
+            'num_classes': 5,
+            'loader_func': dataset.get_california_housing,
+            'input_size': 8,   # 8 features
+            'channels': 1,     # Not applicable for tabular
+            'loss_ylim': (0, 0.4),  # 5-class binned regression
+            'type': 'tabular'
+        },
+        'digits_tabular': {
+            'num_classes': 10,
+            'loader_func': dataset.get_digits_tabular,
+            'input_size': 64,  # 64 features (8x8 flattened)
+            'channels': 1,     # Not applicable for tabular
+            'loss_ylim': (0, 0.2),  # 10-class classification
+            'type': 'tabular'
         }
     }
     
     if dataset_name not in dataset_configs:
-        raise ValueError(f"Unsupported dataset: {dataset_name}. Supported datasets: {list(dataset_configs.keys())}")
+        supported_datasets = list(dataset_configs.keys())
+        image_datasets = [k for k, v in dataset_configs.items() if v['type'] == 'image']
+        tabular_datasets = [k for k, v in dataset_configs.items() if v['type'] == 'tabular']
+        raise ValueError(f"Unsupported dataset: {dataset_name}. "
+                        f"Supported image datasets: {image_datasets}. "
+                        f"Supported tabular datasets: {tabular_datasets}.")
     
     return dataset_configs[dataset_name]
 
@@ -116,9 +160,14 @@ def compute_agop_nfm_correlation(model_path, layer_indices, max_samples=None, in
         
         # Get dataset-specific parameters
         NUM_CLASSES = dataset_info['num_classes']
-        SIZE = dataset_info['input_size']
-        c = dataset_info['channels']
-        dim = c * SIZE * SIZE
+        dataset_type = dataset_info['type']
+        
+        if dataset_type == 'image':
+            SIZE = dataset_info['input_size']
+            c = dataset_info['channels']
+            dim = c * SIZE * SIZE
+        else:  # tabular
+            dim = dataset_info['input_size']  # Number of features
         
         # Load correct dataset based on dataset_name
         if dataset_name == 'svhn':
@@ -131,6 +180,14 @@ def compute_agop_nfm_correlation(model_path, layer_indices, max_samples=None, in
             trainloader, valloader, testloader = dataset.get_celeba()
         elif dataset_name == 'stl_star':
             trainloader, valloader, testloader = dataset.get_stl_star()
+        elif dataset_name == 'breast_cancer':
+            trainloader, valloader, testloader = dataset.get_breast_cancer()
+        elif dataset_name == 'wine':
+            trainloader, valloader, testloader = dataset.get_wine()
+        elif dataset_name == 'california_housing':
+            trainloader, valloader, testloader = dataset.get_california_housing()
+        elif dataset_name == 'digits_tabular':
+            trainloader, valloader, testloader = dataset.get_digits_tabular()
         else:
             raise ValueError(f"Unsupported dataset: {dataset_name}")
         
@@ -231,10 +288,18 @@ def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max
         trainloader, valloader, testloader = dataset.get_celeba()
     elif dataset_name == 'stl_star':
         trainloader, valloader, testloader = dataset.get_stl_star()
+    elif dataset_name == 'breast_cancer':
+        trainloader, valloader, testloader = dataset.get_breast_cancer()
+    elif dataset_name == 'wine':
+        trainloader, valloader, testloader = dataset.get_wine()
+    elif dataset_name == 'california_housing':
+        trainloader, valloader, testloader = dataset.get_california_housing()
+    elif dataset_name == 'digits_tabular':
+        trainloader, valloader, testloader = dataset.get_digits_tabular()
     else:
         raise ValueError(f"Unsupported dataset: {dataset_name}")
     
-    # Get input dimension
+    # Get input dimension (works for both image and tabular data)
     for batch in trainloader:
         inputs, _ = batch
         _, dim = inputs.shape
@@ -487,8 +552,11 @@ def main():
                         choices=['sgd', 'adam', 'muon'],
                         help='Optimizer to use')
     parser.add_argument('--dataset', type=str, default='svhn',
-                        choices=['svhn', 'cifar', 'cifar_mnist', 'celeba', 'stl_star'],
-                        help='Dataset to use (default: svhn)')
+                        choices=['svhn', 'cifar', 'cifar_mnist', 'celeba', 'stl_star', 
+                                'breast_cancer', 'wine', 'california_housing', 'digits_tabular'],
+                        help='Dataset to use (default: svhn). '
+                             'Image datasets: svhn, cifar, cifar_mnist, celeba, stl_star. '
+                             'Tabular datasets: breast_cancer, wine, california_housing, digits_tabular.')
     parser.add_argument('--lr', type=float, default=None,
                         help='Learning rate (default: auto-select based on optimizer)')
     parser.add_argument('--epochs', type=int, default=500,
