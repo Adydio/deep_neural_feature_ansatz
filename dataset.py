@@ -3,7 +3,6 @@ import torchvision
 import torchvision.transforms as transforms
 from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import train_test_split
-from sklearn.datasets import load_breast_cancer, load_wine, load_digits, fetch_california_housing
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 import pandas as pd
 import numpy as np
@@ -395,8 +394,11 @@ def get_stl_star(split_percentage=.8, num_train=float('inf'),
     return trainloader, valloader, testloader
 
 # =============================================================================
-# Tabular Dataset Support
+# OpenML Tabular Benchmark Dataset Support
+# Following the standard tabular benchmark from https://github.com/LeoGrin/tabular-benchmark
 # =============================================================================
+
+import openml
 
 def tabular_to_one_hot_data(X, y, num_classes):
     """Convert tabular data to one-hot format compatible with existing pipeline"""
@@ -417,16 +419,44 @@ def tabular_to_one_hot_data(X, y, num_classes):
     return dataset
 
 
-def get_breast_cancer(split_percentage=0.8, normalize=True):
+def load_openml_dataset(dataset_id, split_percentage=0.8, normalize=True, max_samples=None):
     """
-    Load Breast Cancer Wisconsin dataset
-    Binary classification: 30 features, 2 classes (malignant/benign)
+    Load OpenML dataset by ID
     """
-    NUM_CLASSES = 2
+    print(f"Loading OpenML dataset {dataset_id}...")
     
-    # Load dataset
-    data = load_breast_cancer()
-    X, y = data.data, data.target
+    # Load dataset from OpenML
+    dataset = openml.datasets.get_dataset(dataset_id)
+    X, y, categorical_indicator, attribute_names = dataset.get_data(
+        dataset_format="dataframe", target=dataset.default_target_attribute
+    )
+    
+    # Handle categorical features (encode as numerical)
+    if categorical_indicator is not None and any(categorical_indicator):
+        # Encode categorical features
+        for i, is_cat in enumerate(categorical_indicator):
+            if is_cat and i < X.shape[1]:  # Skip target column
+                le = LabelEncoder()
+                X.iloc[:, i] = le.fit_transform(X.iloc[:, i].astype(str))
+    
+    # Convert to numpy
+    X = X.values.astype(np.float32)
+    
+    # Handle categorical target (encode as numerical)
+    if y.dtype == 'object' or y.dtype.name == 'category':
+        le = LabelEncoder()
+        y = le.fit_transform(y)
+    else:
+        y = y.values.astype(int)
+    
+    # Limit dataset size if specified
+    if max_samples is not None and len(X) > max_samples:
+        indices = np.random.choice(len(X), max_samples, replace=False)
+        X = X[indices]
+        y = y[indices]
+    
+    # Get number of classes
+    num_classes = len(np.unique(y))
     
     # Normalize features
     if normalize:
@@ -445,9 +475,9 @@ def get_breast_cancer(split_percentage=0.8, normalize=True):
     )
     
     # Convert to one-hot format
-    trainset = tabular_to_one_hot_data(X_train, y_train, NUM_CLASSES)
-    valset = tabular_to_one_hot_data(X_val, y_val, NUM_CLASSES)
-    testset = tabular_to_one_hot_data(X_test, y_test, NUM_CLASSES)
+    trainset = tabular_to_one_hot_data(X_train, y_train, num_classes)
+    valset = tabular_to_one_hot_data(X_val, y_val, num_classes)
+    testset = tabular_to_one_hot_data(X_test, y_test, num_classes)
     
     # Get optimal number of workers
     num_workers = get_optimal_num_workers()
@@ -457,144 +487,52 @@ def get_breast_cancer(split_percentage=0.8, normalize=True):
     valloader = DataLoader(valset, batch_size=128, shuffle=False, num_workers=num_workers)
     testloader = DataLoader(testset, batch_size=128, shuffle=False, num_workers=num_workers)
     
-    print(f"Breast Cancer Dataset - Train: {len(trainset)}, Val: {len(valset)}, Test: {len(testset)}")
-    print(f"Features: {X.shape[1]}, Classes: {NUM_CLASSES}")
+    print(f"OpenML Dataset {dataset_id} ({dataset.name}) - Train: {len(trainset)}, Val: {len(valset)}, Test: {len(testset)}")
+    print(f"Features: {X.shape[1]}, Classes: {num_classes}")
+    
     return trainloader, valloader, testloader
 
 
-def get_wine(split_percentage=0.8, normalize=True):
-    """
-    Load Wine dataset
-    Multi-class classification: 13 features, 3 classes
-    """
-    NUM_CLASSES = 3
-    
-    # Load dataset
-    data = load_wine()
-    X, y = data.data, data.target
-    
-    # Normalize features
-    if normalize:
-        scaler = StandardScaler()
-        X = scaler.fit_transform(X)
-    
-    # Split into train/test
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y
-    )
-    
-    # Further split train into train/val
-    X_train, X_val, y_train, y_val = train_test_split(
-        X_train, y_train, test_size=(1-split_percentage)/0.8, 
-        random_state=42, stratify=y_train
-    )
-    
-    # Convert to one-hot format
-    trainset = tabular_to_one_hot_data(X_train, y_train, NUM_CLASSES)
-    valset = tabular_to_one_hot_data(X_val, y_val, NUM_CLASSES)
-    testset = tabular_to_one_hot_data(X_test, y_test, NUM_CLASSES)
-    
-    # Get optimal number of workers
-    num_workers = get_optimal_num_workers()
-    
-    # Create data loaders
-    trainloader = DataLoader(trainset, batch_size=128, shuffle=True, num_workers=num_workers)
-    valloader = DataLoader(valset, batch_size=128, shuffle=False, num_workers=num_workers)
-    testloader = DataLoader(testset, batch_size=128, shuffle=False, num_workers=num_workers)
-    
-    print(f"Wine Dataset - Train: {len(trainset)}, Val: {len(valset)}, Test: {len(testset)}")
-    print(f"Features: {X.shape[1]}, Classes: {NUM_CLASSES}")
-    return trainloader, valloader, testloader
+# Standard OpenML Tabular Benchmark Datasets
+# From Suite 337 (Classification with numerical features only)
+
+def get_credit(split_percentage=0.8, normalize=True):
+    """OpenML Dataset 1590: credit (Australian Credit Approval)"""
+    return load_openml_dataset(1590, split_percentage, normalize, max_samples=20000)
 
 
-def get_california_housing(split_percentage=0.8, normalize=True, num_bins=5):
-    """
-    Load California Housing dataset (converted to classification)
-    Regression -> Classification: 8 features, binned target into classes
-    """
-    NUM_CLASSES = num_bins
-    
-    # Load dataset
-    data = fetch_california_housing()
-    X, y = data.data, data.target
-    
-    # Convert regression to classification by binning target values
-    y_binned = pd.cut(y, bins=num_bins, labels=False)
-    
-    # Normalize features
-    if normalize:
-        scaler = StandardScaler()
-        X = scaler.fit_transform(X)
-    
-    # Split into train/test
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y_binned, test_size=0.2, random_state=42, stratify=y_binned
-    )
-    
-    # Further split train into train/val
-    X_train, X_val, y_train, y_val = train_test_split(
-        X_train, y_train, test_size=(1-split_percentage)/0.8, 
-        random_state=42, stratify=y_train
-    )
-    
-    # Convert to one-hot format
-    trainset = tabular_to_one_hot_data(X_train, y_train, NUM_CLASSES)
-    valset = tabular_to_one_hot_data(X_val, y_val, NUM_CLASSES)
-    testset = tabular_to_one_hot_data(X_test, y_test, NUM_CLASSES)
-    
-    # Get optimal number of workers
-    num_workers = get_optimal_num_workers()
-    
-    # Create data loaders
-    trainloader = DataLoader(trainset, batch_size=128, shuffle=True, num_workers=num_workers)
-    valloader = DataLoader(valset, batch_size=128, shuffle=False, num_workers=num_workers)
-    testloader = DataLoader(testset, batch_size=128, shuffle=False, num_workers=num_workers)
-    
-    print(f"California Housing Dataset - Train: {len(trainset)}, Val: {len(valset)}, Test: {len(testset)}")
-    print(f"Features: {X.shape[1]}, Classes: {NUM_CLASSES}")
-    return trainloader, valloader, testloader
+def get_electricity(split_percentage=0.8, normalize=True):
+    """OpenML Dataset 151: electricity (Electricity pricing)"""
+    return load_openml_dataset(151, split_percentage, normalize, max_samples=50000)
 
 
-def get_digits_tabular(split_percentage=0.8, normalize=True):
-    """
-    Load Digits dataset (8x8 images flattened to 64 features)
-    Multi-class classification: 64 features, 10 classes (digits 0-9)
-    """
-    NUM_CLASSES = 10
-    
-    # Load dataset
-    data = load_digits()
-    X, y = data.data, data.target
-    
-    # Normalize features
-    if normalize:
-        scaler = StandardScaler()
-        X = scaler.fit_transform(X)
-    
-    # Split into train/test
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y
-    )
-    
-    # Further split train into train/val
-    X_train, X_val, y_train, y_val = train_test_split(
-        X_train, y_train, test_size=(1-split_percentage)/0.8, 
-        random_state=42, stratify=y_train
-    )
-    
-    # Convert to one-hot format
-    trainset = tabular_to_one_hot_data(X_train, y_train, NUM_CLASSES)
-    valset = tabular_to_one_hot_data(X_val, y_val, NUM_CLASSES)
-    testset = tabular_to_one_hot_data(X_test, y_test, NUM_CLASSES)
-    
-    # Get optimal number of workers
-    num_workers = get_optimal_num_workers()
-    
-    # Create data loaders
-    trainloader = DataLoader(trainset, batch_size=128, shuffle=True, num_workers=num_workers)
-    valloader = DataLoader(valset, batch_size=128, shuffle=False, num_workers=num_workers)
-    testloader = DataLoader(testset, batch_size=128, shuffle=False, num_workers=num_workers)
-    
-    print(f"Digits (Tabular) Dataset - Train: {len(trainset)}, Val: {len(valset)}, Test: {len(testset)}")
-    print(f"Features: {X.shape[1]}, Classes: {NUM_CLASSES}")
-    return trainloader, valloader, testloader
+def get_covertype(split_percentage=0.8, normalize=True):
+    """OpenML Dataset 1596: covertype (Forest Cover Type - sampled for memory)"""
+    return load_openml_dataset(1596, split_percentage, normalize, max_samples=50000)
+
+
+def get_pol(split_percentage=0.8, normalize=True):
+    """OpenML Dataset 722: pol (Political voting)"""
+    return load_openml_dataset(722, split_percentage, normalize)
+
+
+def get_house_16H(split_percentage=0.8, normalize=True):
+    """OpenML Dataset 821: house_16H (House prices)"""
+    return load_openml_dataset(821, split_percentage, normalize)
+
+
+def get_MagicTelescope(split_percentage=0.8, normalize=True):
+    """OpenML Dataset 1120: MagicTelescope (MAGIC Gamma Telescope)"""
+    return load_openml_dataset(1120, split_percentage, normalize)
+
+
+# Additional classic OpenML datasets for variety
+
+def get_credit_g(split_percentage=0.8, normalize=True):
+    """OpenML Dataset 31: credit-g (German Credit)"""
+    return load_openml_dataset(31, split_percentage, normalize)
+
+
+def get_kr_vs_kp(split_percentage=0.8, normalize=True):
+    """OpenML Dataset 3: kr-vs-kp (Chess King-Rook vs King-Pawn)"""
+    return load_openml_dataset(3, split_percentage, normalize)

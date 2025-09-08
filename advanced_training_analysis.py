@@ -73,41 +73,73 @@ def get_dataset_info(dataset_name):
             'loss_ylim': (0, 0.25),  # Consistent loss range for STL-Star across all optimizers
             'type': 'image'
         },
-        # Tabular datasets
-        'breast_cancer': {
+        # Tabular datasets (OpenML Tabular Benchmark)
+        'credit': {
             'num_classes': 2,
-            'loader_func': dataset.get_breast_cancer,
-            'input_size': 30,  # 30 features
+            'loader_func': dataset.get_credit,
+            'input_size': 14,  # Australian Credit features
             'channels': 1,     # Not applicable for tabular
             'loss_ylim': (0, 0.2),  # Binary classification
             'type': 'tabular'
         },
-        'wine': {
-            'num_classes': 3,
-            'loader_func': dataset.get_wine,
-            'input_size': 13,  # 13 features
+        'electricity': {
+            'num_classes': 2,
+            'loader_func': dataset.get_electricity,
+            'input_size': 8,   # Electricity pricing features
             'channels': 1,     # Not applicable for tabular
-            'loss_ylim': (0, 0.3),  # 3-class classification
+            'loss_ylim': (0, 0.25),  # Binary classification
             'type': 'tabular'
         },
-        'california_housing': {
-            'num_classes': 5,
-            'loader_func': dataset.get_california_housing,
-            'input_size': 8,   # 8 features
+        'covertype': {
+            'num_classes': 2,
+            'loader_func': dataset.get_covertype,
+            'input_size': 54,  # Forest cover type features
             'channels': 1,     # Not applicable for tabular
-            'loss_ylim': (0, 0.4),  # 5-class binned regression
+            'loss_ylim': (0, 0.15),  # Binary classification
             'type': 'tabular'
         },
-        'digits_tabular': {
-            'num_classes': 10,
-            'loader_func': dataset.get_digits_tabular,
-            'input_size': 64,  # 64 features (8x8 flattened)
+        'pol': {
+            'num_classes': 2,
+            'loader_func': dataset.get_pol,
+            'input_size': 27,  # Political voting features
             'channels': 1,     # Not applicable for tabular
-            'loss_ylim': (0, 0.2),  # 10-class classification
+            'loss_ylim': (0, 0.2),  # Binary classification
+            'type': 'tabular'
+        },
+        'house_16H': {
+            'num_classes': 2,
+            'loader_func': dataset.get_house_16H,
+            'input_size': 17,  # House pricing features
+            'channels': 1,     # Not applicable for tabular
+            'loss_ylim': (0, 0.2),  # Binary classification
+            'type': 'tabular'
+        },
+        'MagicTelescope': {
+            'num_classes': 2,
+            'loader_func': dataset.get_MagicTelescope,
+            'input_size': 11,  # Magic Telescope features
+            'channels': 1,     # Not applicable for tabular
+            'loss_ylim': (0, 0.15),  # Binary classification
+            'type': 'tabular'
+        },
+        'credit_g': {
+            'num_classes': 2,
+            'loader_func': dataset.get_credit_g,
+            'input_size': 20,  # German Credit features
+            'channels': 1,     # Not applicable for tabular
+            'loss_ylim': (0, 0.25),  # Binary classification
+            'type': 'tabular'
+        },
+        'kr_vs_kp': {
+            'num_classes': 2,
+            'loader_func': dataset.get_kr_vs_kp,
+            'input_size': 36,  # Chess board features
+            'channels': 1,     # Not applicable for tabular
+            'loss_ylim': (0, 0.1),  # Binary classification
             'type': 'tabular'
         }
     }
-    
+
     if dataset_name not in dataset_configs:
         supported_datasets = list(dataset_configs.keys())
         image_datasets = [k for k, v in dataset_configs.items() if v['type'] == 'image']
@@ -180,14 +212,22 @@ def compute_agop_nfm_correlation(model_path, layer_indices, max_samples=None, in
             trainloader, valloader, testloader = dataset.get_celeba()
         elif dataset_name == 'stl_star':
             trainloader, valloader, testloader = dataset.get_stl_star()
-        elif dataset_name == 'breast_cancer':
-            trainloader, valloader, testloader = dataset.get_breast_cancer()
-        elif dataset_name == 'wine':
-            trainloader, valloader, testloader = dataset.get_wine()
-        elif dataset_name == 'california_housing':
-            trainloader, valloader, testloader = dataset.get_california_housing()
-        elif dataset_name == 'digits_tabular':
-            trainloader, valloader, testloader = dataset.get_digits_tabular()
+        elif dataset_name == 'credit':
+            trainloader, valloader, testloader = dataset.get_credit()
+        elif dataset_name == 'electricity':
+            trainloader, valloader, testloader = dataset.get_electricity()
+        elif dataset_name == 'covertype':
+            trainloader, valloader, testloader = dataset.get_covertype()
+        elif dataset_name == 'pol':
+            trainloader, valloader, testloader = dataset.get_pol()
+        elif dataset_name == 'house_16H':
+            trainloader, valloader, testloader = dataset.get_house_16H()
+        elif dataset_name == 'MagicTelescope':
+            trainloader, valloader, testloader = dataset.get_MagicTelescope()
+        elif dataset_name == 'credit_g':
+            trainloader, valloader, testloader = dataset.get_credit_g()
+        elif dataset_name == 'kr_vs_kp':
+            trainloader, valloader, testloader = dataset.get_kr_vs_kp()
         else:
             raise ValueError(f"Unsupported dataset: {dataset_name}")
         
@@ -288,14 +328,22 @@ def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max
         trainloader, valloader, testloader = dataset.get_celeba()
     elif dataset_name == 'stl_star':
         trainloader, valloader, testloader = dataset.get_stl_star()
-    elif dataset_name == 'breast_cancer':
-        trainloader, valloader, testloader = dataset.get_breast_cancer()
-    elif dataset_name == 'wine':
-        trainloader, valloader, testloader = dataset.get_wine()
-    elif dataset_name == 'california_housing':
-        trainloader, valloader, testloader = dataset.get_california_housing()
-    elif dataset_name == 'digits_tabular':
-        trainloader, valloader, testloader = dataset.get_digits_tabular()
+    elif dataset_name == 'credit':
+        trainloader, valloader, testloader = dataset.get_credit()
+    elif dataset_name == 'electricity':
+        trainloader, valloader, testloader = dataset.get_electricity()
+    elif dataset_name == 'covertype':
+        trainloader, valloader, testloader = dataset.get_covertype()
+    elif dataset_name == 'pol':
+        trainloader, valloader, testloader = dataset.get_pol()
+    elif dataset_name == 'house_16H':
+        trainloader, valloader, testloader = dataset.get_house_16H()
+    elif dataset_name == 'MagicTelescope':
+        trainloader, valloader, testloader = dataset.get_MagicTelescope()
+    elif dataset_name == 'credit_g':
+        trainloader, valloader, testloader = dataset.get_credit_g()
+    elif dataset_name == 'kr_vs_kp':
+        trainloader, valloader, testloader = dataset.get_kr_vs_kp()
     else:
         raise ValueError(f"Unsupported dataset: {dataset_name}")
     
@@ -553,10 +601,11 @@ def main():
                         help='Optimizer to use')
     parser.add_argument('--dataset', type=str, default='svhn',
                         choices=['svhn', 'cifar', 'cifar_mnist', 'celeba', 'stl_star', 
-                                'breast_cancer', 'wine', 'california_housing', 'digits_tabular'],
+                                'credit', 'electricity', 'covertype', 'pol', 'house_16H', 
+                                'MagicTelescope', 'credit_g', 'kr_vs_kp'],
                         help='Dataset to use (default: svhn). '
                              'Image datasets: svhn, cifar, cifar_mnist, celeba, stl_star. '
-                             'Tabular datasets: breast_cancer, wine, california_housing, digits_tabular.')
+                             'Tabular datasets (OpenML benchmark): credit, electricity, covertype, pol, house_16H, MagicTelescope, credit_g, kr_vs_kp.')
     parser.add_argument('--lr', type=float, default=None,
                         help='Learning rate (default: auto-select based on optimizer)')
     parser.add_argument('--epochs', type=int, default=500,
