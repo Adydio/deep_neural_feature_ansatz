@@ -29,9 +29,9 @@ from verify_deep_NFA import (
     egop, correlate, read_configs, SEED
 )
 
-def initialize_first_layer_weights(net, depth, std=1e-4):
+def initialize_all_layer_weights(net, depth, std=1e-4):
     """
-    Initialize the first layer weights according to Gaussian distribution 
+    Initialize ALL layer weights according to Gaussian distribution 
     with mean 0 and specified standard deviation (default: 10^-4 = 0.0001)
     
     Args:
@@ -40,18 +40,16 @@ def initialize_first_layer_weights(net, depth, std=1e-4):
         std: Standard deviation for Gaussian initialization (default: 1e-4)
     """
     with torch.no_grad():
-        # Find the first layer (input layer to first hidden layer)
-        if depth == 1:
-            # Single layer network
-            first_layer = net.first
-        else:
-            # Multi-layer network - first layer is in net.first Sequential
-            first_layer = net.first[0]  # nn.Linear layer inside Sequential
+        layer_count = 0
+        for name, param in net.named_parameters():
+            if 'weight' in name and param.dim() == 2:  # Only Linear layer weights
+                # Initialize each layer with Gaussian(mean=0, std=std)
+                torch.nn.init.normal_(param, mean=0.0, std=std)
+                layer_count += 1
+                print(f"Initialized layer {layer_count-1} ({name}): mean={param.mean().item():.6f}, "
+                      f"std={param.std().item():.6f}, shape={param.shape}")
         
-        # Initialize first layer weights with Gaussian(mean=0, std=std)
-        torch.nn.init.normal_(first_layer.weight, mean=0.0, std=std)
-        print(f"Initialized first layer weights: mean={first_layer.weight.mean().item():.6f}, "
-              f"std={first_layer.weight.std().item():.6f}")
+        print(f"Total initialized layers: {layer_count}")
 
 def get_dataset_info(dataset_name):
     """Get dataset-specific information including loss axis ranges for consistent plotting"""
@@ -397,9 +395,9 @@ def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max
                           num_classes=dataset_info['num_classes'],
                           act_name=configs['act'])
     
-    # Initialize the first layer weights according to Gaussian distribution 
+    # Initialize ALL layer weights according to Gaussian distribution 
     # with mean 0 and standard deviation 10^-4 = 0.0001
-    initialize_first_layer_weights(net, configs['depth'], std=1e-4)
+    initialize_all_layer_weights(net, configs['depth'], std=1e-4)
     
     # Get device and setup
     device = trainer.get_best_device()
