@@ -29,6 +29,30 @@ from verify_deep_NFA import (
     egop, correlate, read_configs, SEED
 )
 
+def initialize_first_layer_weights(net, depth, std=1e-3):
+    """
+    Initialize the first layer weights according to Gaussian distribution 
+    with mean 0 and specified standard deviation (default: 10e-4 = 0.001)
+    
+    Args:
+        net: The neural network
+        depth: Network depth 
+        std: Standard deviation for Gaussian initialization (default: 1e-3)
+    """
+    with torch.no_grad():
+        # Find the first layer (input layer to first hidden layer)
+        if depth == 1:
+            # Single layer network
+            first_layer = net.first
+        else:
+            # Multi-layer network - first layer is in net.first Sequential
+            first_layer = net.first[0]  # nn.Linear layer inside Sequential
+        
+        # Initialize first layer weights with Gaussian(mean=0, std=std)
+        torch.nn.init.normal_(first_layer.weight, mean=0.0, std=std)
+        print(f"Initialized first layer weights: mean={first_layer.weight.mean().item():.6f}, "
+              f"std={first_layer.weight.std().item():.6f}")
+
 def get_dataset_info(dataset_name):
     """Get dataset-specific information including loss axis ranges for consistent plotting"""
     dataset_configs = {
@@ -372,6 +396,10 @@ def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max
                           depth=configs['depth'],
                           num_classes=dataset_info['num_classes'],
                           act_name=configs['act'])
+    
+    # Initialize the first layer weights according to Gaussian distribution 
+    # with mean 0 and standard deviation 10e-4 = 0.001
+    initialize_first_layer_weights(net, configs['depth'], std=1e-3)
     
     # Get device and setup
     device = trainer.get_best_device()
