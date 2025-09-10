@@ -542,6 +542,88 @@ def get_credit_g(split_percentage=0.8, normalize=True):
     return load_openml_dataset(31, split_percentage, normalize)
 
 
+def get_mnist(split_percentage=.8, num_train=float('inf'), num_test=float('inf')):
+    """Get MNIST dataset with one-hot encoding"""
+    NUM_CLASSES = 10
+    transform = transforms.Compose([
+        transforms.Resize([32, 32]),  # Resize to match other image datasets
+        transforms.ToTensor(),
+        transforms.Lambda(lambda x: x.repeat(3, 1, 1) if x.size(0) == 1 else x)  # Convert to 3 channels
+    ])
+    path = '~/datasets/'
+
+    trainset = torchvision.datasets.MNIST(root=path,
+                                         train=True,
+                                         transform=transform,
+                                         download=True)
+    trainset = one_hot_data(trainset, NUM_CLASSES, num_samples=num_train)
+    trainset, valset = split(trainset, p=split_percentage)
+
+    # Get optimal number of workers
+    num_workers = get_optimal_num_workers()
+
+    trainloader = torch.utils.data.DataLoader(trainset, batch_size=128,
+                                              shuffle=True, num_workers=num_workers)
+
+    valloader = torch.utils.data.DataLoader(valset, batch_size=128,
+                                            shuffle=False, num_workers=num_workers)
+
+    testset = torchvision.datasets.MNIST(root=path,
+                                        train=False,
+                                        transform=transform,
+                                        download=True)
+
+    testset = one_hot_data(testset, NUM_CLASSES, num_samples=num_test)
+
+    testloader = torch.utils.data.DataLoader(testset, batch_size=128,
+                                             shuffle=False, num_workers=num_workers)
+
+    print("Num Train: ", len(trainset), "Num Val: ", len(valset),
+          "Num Test: ", len(testset))
+    return trainloader, valloader, testloader
+
+
+def get_fashion_mnist(split_percentage=.8, num_train=float('inf'), num_test=float('inf')):
+    """Get Fashion-MNIST dataset with one-hot encoding"""
+    NUM_CLASSES = 10
+    transform = transforms.Compose([
+        transforms.Resize([32, 32]),  # Resize to match other image datasets
+        transforms.ToTensor(),
+        transforms.Lambda(lambda x: x.repeat(3, 1, 1) if x.size(0) == 1 else x)  # Convert to 3 channels
+    ])
+    path = '~/datasets/'
+
+    trainset = torchvision.datasets.FashionMNIST(root=path,
+                                                train=True,
+                                                transform=transform,
+                                                download=True)
+    trainset = one_hot_data(trainset, NUM_CLASSES, num_samples=num_train)
+    trainset, valset = split(trainset, p=split_percentage)
+
+    # Get optimal number of workers
+    num_workers = get_optimal_num_workers()
+
+    trainloader = torch.utils.data.DataLoader(trainset, batch_size=128,
+                                              shuffle=True, num_workers=num_workers)
+
+    valloader = torch.utils.data.DataLoader(valset, batch_size=128,
+                                            shuffle=False, num_workers=num_workers)
+
+    testset = torchvision.datasets.FashionMNIST(root=path,
+                                               train=False,
+                                               transform=transform,
+                                               download=True)
+
+    testset = one_hot_data(testset, NUM_CLASSES, num_samples=num_test)
+
+    testloader = torch.utils.data.DataLoader(testset, batch_size=128,
+                                             shuffle=False, num_workers=num_workers)
+
+    print("Num Train: ", len(trainset), "Num Val: ", len(valset),
+          "Num Test: ", len(testset))
+    return trainloader, valloader, testloader
+
+
 def get_kr_vs_kp(split_percentage=0.8, normalize=True):
     """OpenML Dataset 3: kr-vs-kp (Chess King-Rook vs King-Pawn)"""
     return load_openml_dataset(3, split_percentage, normalize)

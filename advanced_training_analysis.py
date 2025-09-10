@@ -101,6 +101,22 @@ def get_dataset_info(dataset_name):
             'loss_ylim': (0, 0.25),  # Consistent loss range for STL-Star across all optimizers
             'type': 'image'
         },
+        'mnist': {
+            'num_classes': 10,
+            'loader_func': dataset.get_mnist,
+            'input_size': 32,
+            'channels': 3,
+            'loss_ylim': (0, 0.08),  # Consistent loss range for MNIST across all optimizers
+            'type': 'image'
+        },
+        'fashion_mnist': {
+            'num_classes': 10,
+            'loader_func': dataset.get_fashion_mnist,
+            'input_size': 32,
+            'channels': 3,
+            'loss_ylim': (0, 0.12),  # Consistent loss range for Fashion-MNIST across all optimizers
+            'type': 'image'
+        },
         # Tabular datasets (OpenML Tabular Benchmark)
         'credit': {
             'num_classes': 2,
@@ -240,6 +256,10 @@ def compute_agop_nfm_correlation(model_path, layer_indices, max_samples=None, in
             trainloader, valloader, testloader = dataset.get_celeba()
         elif dataset_name == 'stl_star':
             trainloader, valloader, testloader = dataset.get_stl_star()
+        elif dataset_name == 'mnist':
+            trainloader, valloader, testloader = dataset.get_mnist()
+        elif dataset_name == 'fashion_mnist':
+            trainloader, valloader, testloader = dataset.get_fashion_mnist()
         elif dataset_name == 'credit':
             trainloader, valloader, testloader = dataset.get_credit()
         elif dataset_name == 'electricity':
@@ -356,6 +376,10 @@ def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max
         trainloader, valloader, testloader = dataset.get_celeba()
     elif dataset_name == 'stl_star':
         trainloader, valloader, testloader = dataset.get_stl_star()
+    elif dataset_name == 'mnist':
+        trainloader, valloader, testloader = dataset.get_mnist()
+    elif dataset_name == 'fashion_mnist':
+        trainloader, valloader, testloader = dataset.get_fashion_mnist()
     elif dataset_name == 'credit':
         trainloader, valloader, testloader = dataset.get_credit()
     elif dataset_name == 'electricity':
@@ -683,11 +707,11 @@ def main():
                         choices=['sgd', 'adam', 'adamw', 'muon'],
                         help='Optimizer to use')
     parser.add_argument('--dataset', type=str, default='svhn',
-                        choices=['svhn', 'cifar', 'cifar_mnist', 'celeba', 'stl_star', 
+                        choices=['svhn', 'cifar', 'cifar_mnist', 'celeba', 'stl_star', 'mnist', 'fashion_mnist',
                                 'credit', 'electricity', 'covertype', 'pol', 'house_16H', 
                                 'MagicTelescope', 'credit_g', 'kr_vs_kp'],
                         help='Dataset to use (default: svhn). '
-                             'Image datasets: svhn, cifar, cifar_mnist, celeba, stl_star. '
+                             'Image datasets: svhn, cifar, cifar_mnist, celeba, stl_star, mnist, fashion_mnist. '
                              'Tabular datasets (OpenML benchmark): credit, electricity, covertype, pol, house_16H, MagicTelescope, credit_g, kr_vs_kp.')
     parser.add_argument('--lr', type=float, default=None,
                         help='Learning rate (default: auto-select based on optimizer)')
