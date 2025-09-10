@@ -29,33 +29,51 @@ from verify_deep_NFA import (
     egop, correlate, read_configs, SEED
 )
 
-def initialize_all_layer_weights(net, depth, std=1e-4):
+def initialize_all_layer_weights(net, depth, init_value=1e-4, use_original_strategy=True):
     """
-    Initialize layer weights: First layer with Gaussian distribution (mean=0, std=1e-4),
-    other layers with Kaiming initialization
+    Initialize layer weights to match original paper's strategy exactly
     
     Args:
         net: The neural network
         depth: Network depth 
-        std: Standard deviation for Gaussian initialization of first layer (default: 1e-4)
+        init_value: Value for first layer initialization (default: 1e-4)
+        use_original_strategy: If True, match original trainer.py exactly
     """
-    with torch.no_grad():
-        layer_count = 0
-        for name, param in net.named_parameters():
-            if 'weight' in name and param.dim() == 2:  # Only Linear layer weights
-                if layer_count == 0:
-                    # First layer: Gaussian initialization
-                    torch.nn.init.normal_(param, mean=0.0, std=std)
-                    print(f"Initialized layer {layer_count} ({name}) with Gaussian: mean={param.mean().item():.6f}, "
-                          f"std={param.std().item():.6f}, shape={param.shape}")
-                else:
-                    # Other layers: Kaiming initialization
-                    torch.nn.init.kaiming_normal_(param, mode='fan_in', nonlinearity='relu')
-                    print(f"Initialized layer {layer_count} ({name}) with Kaiming: mean={param.mean().item():.6f}, "
-                          f"std={param.std().item():.6f}, shape={param.shape}")
-                layer_count += 1
+    if use_original_strategy:
+        # Original trainer.py strategy: only initialize first layer if init != 'default'
+        if init_value != 'default':
+            for idx, param in enumerate(net.parameters()):
+                if idx == 0:  # Only first layer
+                    init = torch.Tensor(param.size()).normal_().float() * init_value
+                    param.data = init
+                    print(f"Original strategy - layer {idx}: mean={param.mean().item():.8f}, "
+                          f"std={param.std().item():.8f}, shape={param.shape}")
         
-        print(f"Total initialized layers: {layer_count} (1 Gaussian + {layer_count-1} Kaiming)")
+        # Other layers keep PyTorch default initialization
+        print("Other layers: PyTorch default initialization (Uniform)")
+        for idx, param in enumerate(net.parameters()):
+            if idx > 0 and param.dim() == 2:
+                print(f"Layer {idx} (default): mean={param.mean().item():.8f}, "
+                      f"std={param.std().item():.8f}, shape={param.shape}")
+        print(f"Total layers: 1 custom + {sum(1 for p in net.parameters() if p.dim() == 2) - 1} default")
+    else:
+        # Your mixed strategy
+        with torch.no_grad():
+            layer_count = 0
+            for name, param in net.named_parameters():
+                if 'weight' in name and param.dim() == 2:  # Only Linear layer weights
+                    if layer_count == 0:
+                        # First layer: Gaussian initialization (equivalent to original)
+                        torch.nn.init.normal_(param, mean=0.0, std=init_value)
+                        print(f"Mixed strategy - layer {layer_count} ({name}): mean={param.mean().item():.8f}, "
+                              f"std={param.std().item():.8f}, shape={param.shape}")
+                    else:
+                        # Other layers: Kaiming initialization
+                        torch.nn.init.kaiming_normal_(param, mode='fan_in', nonlinearity='relu')
+                        print(f"Mixed strategy - layer {layer_count} ({name}): mean={param.mean().item():.8f}, "
+                              f"std={param.std().item():.8f}, shape={param.shape}")
+                    layer_count += 1
+            print(f"Total layers: 1 Gaussian + {layer_count-1} Kaiming")
 
 def get_dataset_info(dataset_name):
     """Get dataset-specific information including loss axis ranges for consistent plotting"""
@@ -425,9 +443,9 @@ def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max
                           num_classes=dataset_info['num_classes'],
                           act_name=configs['act'])
     
-    # Initialize ALL layer weights according to Gaussian distribution 
-    # with mean 0 and standard deviation 10^-4 = 0.0001
-    initialize_all_layer_weights(net, configs['depth'], std=1e-4)
+    # Initialize weights using original paper's exact strategy
+    print(f"\n=== Initializing Network Weights ===")
+    initialize_all_layer_weights(net, configs['depth'], init_value=1e-4, use_original_strategy=True)
     
     # Get device and setup
     device = trainer.get_best_device()
