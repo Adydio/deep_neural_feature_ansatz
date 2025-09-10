@@ -212,10 +212,45 @@ def get_dataset_info(dataset_name):
     
     return dataset_configs[dataset_name]
 
-def setup_experiment_dir(optimizer_name, dataset_name='svhn'):
-    """Create experiment directory structure"""
+def setup_experiment_dir(optimizer_name, dataset_name='svhn', configs=None):
+    """Create experiment directory structure with detailed parameter information"""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    exp_dir = f"experiments/{dataset_name}_{optimizer_name}_{timestamp}"
+    
+    # Create detailed directory name with all parameters
+    if configs:
+        lr = configs.get('learning_rate', 'unknown')
+        epochs = configs.get('num_epochs', 'unknown')
+        weight_decay = configs.get('weight_decay', 0)
+        width = configs.get('width', 1024)
+        depth = configs.get('depth', 5)
+        act = configs.get('act', 'relu')
+        val_interval = configs.get('val_interval', 20)
+        init_strategy = configs.get('init_strategy', 'original')
+        
+        # Format weight decay for filename (remove dots and scientific notation)
+        if weight_decay == 0:
+            wd_str = "wd0"
+        elif weight_decay >= 1e-3:
+            wd_str = f"wd{weight_decay:.3f}".replace('.', '_')
+        else:
+            # For very small weight decay, use scientific notation format
+            wd_str = f"wd{weight_decay:.0e}".replace('-', 'm').replace('+', 'p')
+        
+        # Format learning rate for filename
+        if isinstance(lr, float):
+            if lr >= 0.001:
+                lr_str = f"lr{lr:.3f}".replace('.', '_')
+            else:
+                lr_str = f"lr{lr:.0e}".replace('-', 'm').replace('+', 'p')
+        else:
+            lr_str = f"lr{lr}"
+        
+        # Create comprehensive directory name
+        exp_dir = (f"experiments/{dataset_name}_{optimizer_name}_{lr_str}_{wd_str}_"
+                  f"ep{epochs}_int{val_interval}_w{width}_d{depth}_{act}_{init_strategy}_{timestamp}")
+    else:
+        # Fallback to simple naming
+        exp_dir = f"experiments/{dataset_name}_{optimizer_name}_default_{timestamp}"
     
     os.makedirs(exp_dir, exist_ok=True)
     os.makedirs(f"{exp_dir}/models", exist_ok=True)
@@ -372,10 +407,6 @@ def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max
     print(f"Epochs: {num_epochs}")
     print(f"Analysis interval: {val_interval}")
     
-    # Setup experiment directory
-    exp_dir = setup_experiment_dir(optimizer_name, dataset_name)
-    print(f"Experiment directory: {exp_dir}")
-    
     # Set random seed
     torch.manual_seed(SEED)
     random.seed(SEED)
@@ -434,8 +465,13 @@ def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max
         'width': 1024,
         'depth': 5,
         'act': 'relu',
-        'val_interval': val_interval
+        'val_interval': val_interval,
+        'init_strategy': 'original'  # Track initialization strategy
     }
+    
+    # Setup experiment directory with detailed parameters
+    exp_dir = setup_experiment_dir(optimizer_name, dataset_name, configs)
+    print(f"Experiment directory: {exp_dir}")
     
     # Create model
     net = neural_model.Net(dim, width=configs['width'],
@@ -594,7 +630,7 @@ def generate_plots(results, exp_dir, optimizer_name, dataset_name='svhn', config
         else:
             lr_str = f"lr{lr}"
         
-        base_filename = f"{dataset_name}_{optimizer_name}_{lr_str}_{wd_str}_ep{epochs}_int{val_interval}_w{width}_d{depth}_{act}_mixed_init"
+        base_filename = f"{dataset_name}_{optimizer_name}_{lr_str}_{wd_str}_ep{epochs}_int{val_interval}_w{width}_d{depth}_{act}_original_init"
     else:
         base_filename = f"{dataset_name}_{optimizer_name}_default_params"
     
@@ -609,7 +645,7 @@ def generate_plots(results, exp_dir, optimizer_name, dataset_name='svhn', config
     if configs:
         title = (f'{optimizer_name.upper()} Training Analysis: {dataset_name.upper()}\n'
                 f'LR={lr}, WD={weight_decay}, Epochs={epochs}, Interval={val_interval}, '
-                f'Arch=[{width}×{depth}], Act={act}, Init=Mixed(L0:Gauss(0,1e-4), L1+:Kaiming)')
+                f'Arch=[{width}×{depth}], Act={act}, Init=Original(L0:1e-4*Normal, L1+:Default)')
     else:
         title = f'{optimizer_name.upper()} Training Analysis: Loss and AGOP/NFM Correlation'
     
@@ -695,7 +731,7 @@ def generate_plots(results, exp_dir, optimizer_name, dataset_name='svhn', config
         # Detailed title for individual layer plots
         if configs:
             layer_title = (f'{optimizer_name.upper()} Layer {layer_idx} - {dataset_name.upper()}\n'
-                          f'LR={lr}, WD={weight_decay}, Epochs={epochs}, Init=Mixed(L0:Gauss, L1+:Kaiming)')
+                          f'LR={lr}, WD={weight_decay}, Epochs={epochs}, Init=Original(L0:1e-4*Normal, L1+:Default)')
         else:
             layer_title = f'{optimizer_name.upper()} - Layer {layer_idx} Analysis'
         
