@@ -145,7 +145,7 @@ def get_dataset_info(dataset_name):
         'MagicTelescope': {
             'num_classes': 2,
             'loader_func': dataset.get_MagicTelescope,
-            'input_size': 11,  # Magic Telescope features
+            'input_size': 10,  # Magic Telescope features
             'channels': 1,     # Not applicable for tabular
             'loss_ylim': (0, 0.15),  # Binary classification
             'type': 'tabular'
@@ -680,7 +680,7 @@ def generate_plots(results, exp_dir, optimizer_name, dataset_name='svhn', config
 def main():
     parser = argparse.ArgumentParser(description='Advanced Training and AGOP Analysis')
     parser.add_argument('--optimizer', type=str, required=True, 
-                        choices=['sgd', 'adam', 'muon'],
+                        choices=['sgd', 'adam', 'adamw', 'muon'],
                         help='Optimizer to use')
     parser.add_argument('--dataset', type=str, default='svhn',
                         choices=['svhn', 'cifar', 'cifar_mnist', 'celeba', 'stl_star', 
@@ -704,7 +704,7 @@ def main():
     
     # Auto-select learning rate if not provided
     if args.lr is None:
-        lr_defaults = {'sgd': 0.1, 'adam': 0.001, 'muon': 0.01}
+        lr_defaults = {'sgd': 0.1, 'adam': 0.001, 'adamw': 0.001, 'muon': 0.01}
         args.lr = lr_defaults[args.optimizer]
         print(f"Using default learning rate for {args.optimizer}: {args.lr}")
     
