@@ -410,15 +410,11 @@ def compute_agop_nfm_correlation(model_path, layer_indices, max_samples=None, in
             # Get layer output
             out = get_layer_output(net, trainloader, layer_idx=layer_idx, max_samples=max_samples)
             
-            # Compute AGOP based on correlation type
-            if correlation_type.lower() == 'pearson':
-                # For Pearson correlation, use centered EGOP
-                G = egop(subnet, out, centering=True)
-                print(f"    Using centered EGOP for Pearson correlation")
-            else:  # cosine (default)
-                # For Cosine similarity, use uncentered EGOP
-                G = egop(subnet, out, centering=False)
-                print(f"    Using uncentered EGOP for Cosine similarity")
+            # Compute AGOP - use uncentered for both methods
+            # Pearson correlation will handle centering in its own calculation
+            # Cosine similarity works with uncentered data (original approach)
+            G = egop(subnet, out, centering=False)
+            print(f"    Using uncentered EGOP (centering handled by correlation method if needed)")
             
             # Compute correlation based on type
             if correlation_type.lower() == 'pearson':
