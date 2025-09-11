@@ -422,6 +422,7 @@ def tabular_to_one_hot_data(X, y, num_classes):
 def load_openml_dataset(dataset_id, split_percentage=0.8, normalize=True, max_samples=None):
     """
     Load OpenML dataset by ID
+    Returns trainloader, valloader, testloader, scaler (for tabular datasets)
     """
     print(f"Loading OpenML dataset {dataset_id}...")
     
@@ -467,7 +468,8 @@ def load_openml_dataset(dataset_id, split_percentage=0.8, normalize=True, max_sa
     # Get number of classes
     num_classes = len(np.unique(y))
     
-    # Normalize features
+    # Normalize features and save scaler
+    scaler = None
     if normalize:
         scaler = StandardScaler()
         X = scaler.fit_transform(X)
@@ -498,8 +500,9 @@ def load_openml_dataset(dataset_id, split_percentage=0.8, normalize=True, max_sa
     
     print(f"OpenML Dataset {dataset_id} ({dataset.name}) - Train: {len(trainset)}, Val: {len(valset)}, Test: {len(testset)}")
     print(f"Features: {X.shape[1]}, Classes: {num_classes}")
+    print(f"StandardScaler applied: {normalize}")
     
-    return trainloader, valloader, testloader
+    return trainloader, valloader, testloader, scaler
 
 
 # Standard OpenML Tabular Benchmark Datasets
@@ -540,6 +543,11 @@ def get_MagicTelescope(split_percentage=0.8, normalize=True):
 def get_credit_g(split_percentage=0.8, normalize=True):
     """OpenML Dataset 31: credit-g (German Credit)"""
     return load_openml_dataset(31, split_percentage, normalize)
+
+
+def get_kr_vs_kp(split_percentage=0.8, normalize=True):
+    """OpenML Dataset 3: kr-vs-kp (King-Rook vs King-Pawn)"""
+    return load_openml_dataset(3, split_percentage, normalize)
 
 
 def get_mnist(split_percentage=.8, num_train=float('inf'), num_test=float('inf')):

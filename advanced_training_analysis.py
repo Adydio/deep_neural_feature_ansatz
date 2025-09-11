@@ -168,7 +168,7 @@ def get_dataset_info(dataset_name):
             'loss_ylim': (0, 0.12),  # Consistent loss range for Fashion-MNIST across all optimizers
             'type': 'image'
         },
-        # Tabular datasets (OpenML Tabular Benchmark)
+        # Tabular datasets (OpenML Tabular Benchmark) - Note: these return scaler as 4th element
         'credit': {
             'num_classes': 2,
             'loader_func': dataset.get_credit,
@@ -336,6 +336,7 @@ def compute_agop_nfm_correlation(model_path, layer_indices, max_samples=None, in
             dim = dataset_info['input_size']  # Number of features
         
         # Load correct dataset based on dataset_name
+        scaler = None  # For tabular datasets
         if dataset_name == 'svhn':
             trainloader, valloader, testloader = dataset.get_svhn()
         elif dataset_name == 'cifar':
@@ -350,24 +351,31 @@ def compute_agop_nfm_correlation(model_path, layer_indices, max_samples=None, in
             trainloader, valloader, testloader = dataset.get_mnist()
         elif dataset_name == 'fashion_mnist':
             trainloader, valloader, testloader = dataset.get_fashion_mnist()
+        # Tabular datasets - these return scaler as 4th element
         elif dataset_name == 'credit':
-            trainloader, valloader, testloader = dataset.get_credit()
+            trainloader, valloader, testloader, scaler = dataset.get_credit()
         elif dataset_name == 'electricity':
-            trainloader, valloader, testloader = dataset.get_electricity()
+            trainloader, valloader, testloader, scaler = dataset.get_electricity()
         elif dataset_name == 'covertype':
-            trainloader, valloader, testloader = dataset.get_covertype()
+            trainloader, valloader, testloader, scaler = dataset.get_covertype()
         elif dataset_name == 'pol':
-            trainloader, valloader, testloader = dataset.get_pol()
+            trainloader, valloader, testloader, scaler = dataset.get_pol()
         elif dataset_name == 'house_16H':
-            trainloader, valloader, testloader = dataset.get_house_16H()
+            trainloader, valloader, testloader, scaler = dataset.get_house_16H()
         elif dataset_name == 'MagicTelescope':
-            trainloader, valloader, testloader = dataset.get_MagicTelescope()
+            trainloader, valloader, testloader, scaler = dataset.get_MagicTelescope()
         elif dataset_name == 'credit_g':
-            trainloader, valloader, testloader = dataset.get_credit_g()
+            trainloader, valloader, testloader, scaler = dataset.get_credit_g()
         elif dataset_name == 'kr_vs_kp':
-            trainloader, valloader, testloader = dataset.get_kr_vs_kp()
+            trainloader, valloader, testloader, scaler = dataset.get_kr_vs_kp()
         else:
             raise ValueError(f"Unsupported dataset: {dataset_name}")
+        
+        # Log whether StandardScaler is used
+        if scaler is not None:
+            print(f"Using StandardScaler for tabular dataset: {dataset_name}")
+        else:
+            print(f"No scaling applied for image dataset: {dataset_name}")
         
         # Load initial model if provided for remove_init operation
         init_params = None
@@ -463,6 +471,7 @@ def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max
     
     # Get dataset info and load data
     dataset_info = get_dataset_info(dataset_name)
+    scaler = None  # For tabular datasets
     if dataset_name == 'svhn':
         trainloader, valloader, testloader = dataset.get_svhn()
     elif dataset_name == 'cifar':
@@ -477,24 +486,31 @@ def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max
         trainloader, valloader, testloader = dataset.get_mnist()
     elif dataset_name == 'fashion_mnist':
         trainloader, valloader, testloader = dataset.get_fashion_mnist()
+    # Tabular datasets - these return scaler as 4th element
     elif dataset_name == 'credit':
-        trainloader, valloader, testloader = dataset.get_credit()
+        trainloader, valloader, testloader, scaler = dataset.get_credit()
     elif dataset_name == 'electricity':
-        trainloader, valloader, testloader = dataset.get_electricity()
+        trainloader, valloader, testloader, scaler = dataset.get_electricity()
     elif dataset_name == 'covertype':
-        trainloader, valloader, testloader = dataset.get_covertype()
+        trainloader, valloader, testloader, scaler = dataset.get_covertype()
     elif dataset_name == 'pol':
-        trainloader, valloader, testloader = dataset.get_pol()
+        trainloader, valloader, testloader, scaler = dataset.get_pol()
     elif dataset_name == 'house_16H':
-        trainloader, valloader, testloader = dataset.get_house_16H()
+        trainloader, valloader, testloader, scaler = dataset.get_house_16H()
     elif dataset_name == 'MagicTelescope':
-        trainloader, valloader, testloader = dataset.get_MagicTelescope()
+        trainloader, valloader, testloader, scaler = dataset.get_MagicTelescope()
     elif dataset_name == 'credit_g':
-        trainloader, valloader, testloader = dataset.get_credit_g()
+        trainloader, valloader, testloader, scaler = dataset.get_credit_g()
     elif dataset_name == 'kr_vs_kp':
-        trainloader, valloader, testloader = dataset.get_kr_vs_kp()
+        trainloader, valloader, testloader, scaler = dataset.get_kr_vs_kp()
     else:
         raise ValueError(f"Unsupported dataset: {dataset_name}")
+    
+    # Log whether StandardScaler is used
+    if scaler is not None:
+        print(f"Using StandardScaler for tabular dataset: {dataset_name}")
+    else:
+        print(f"No scaling applied for image dataset: {dataset_name}")
     
     # Get input dimension (works for both image and tabular data)
     for batch in trainloader:
