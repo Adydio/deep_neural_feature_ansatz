@@ -29,6 +29,39 @@ from verify_deep_NFA import (
     egop, correlate, read_configs, SEED
 )
 
+def pearson_correlate(M, G):
+    """
+    Compute Pearson correlation coefficient between two matrices.
+    
+    Args:
+        M: Neural Feature Matrix (torch.Tensor)
+        G: EGOP matrix (torch.Tensor)
+    
+    Returns:
+        Pearson correlation coefficient (torch.Tensor)
+    """
+    M = M.double()
+    G = G.double()
+    
+    # Flatten matrices
+    M_flat = M.flatten()
+    G_flat = G.flatten()
+    
+    # Center the data (subtract mean)
+    M_centered = M_flat - M_flat.mean()
+    G_centered = G_flat - G_flat.mean()
+    
+    # Compute Pearson correlation
+    numerator = torch.dot(M_centered, G_centered)
+    denominator = torch.sqrt(torch.sum(M_centered**2) * torch.sum(G_centered**2))
+    
+    # Avoid division by zero
+    if denominator == 0:
+        return torch.tensor(0.0, dtype=torch.double)
+    
+    correlation = numerator / denominator
+    return correlation
+
 def initialize_all_layer_weights(net, depth, init_value=1e-4, use_original_strategy=True):
     """
     Initialize layer weights to match original paper's strategy exactly
@@ -226,6 +259,7 @@ def setup_experiment_dir(optimizer_name, dataset_name='svhn', configs=None):
         act = configs.get('act', 'relu')
         val_interval = configs.get('val_interval', 20)
         init_strategy = configs.get('init_strategy', 'original')
+        correlation_type = configs.get('correlation_type', 'cosine')
         
         # Format weight decay for filename (remove dots and scientific notation)
         if weight_decay == 0:
@@ -247,7 +281,7 @@ def setup_experiment_dir(optimizer_name, dataset_name='svhn', configs=None):
         
         # Create comprehensive directory name
         exp_dir = (f"experiments/{dataset_name}_{optimizer_name}_{lr_str}_{wd_str}_"
-                  f"ep{epochs}_int{val_interval}_w{width}_d{depth}_{act}_{init_strategy}_{timestamp}")
+                  f"ep{epochs}_int{val_interval}_w{width}_d{depth}_{act}_{init_strategy}_{correlation_type}_{timestamp}")
     else:
         # Fallback to simple naming
         exp_dir = f"experiments/{dataset_name}_{optimizer_name}_default_{timestamp}"
@@ -258,7 +292,7 @@ def setup_experiment_dir(optimizer_name, dataset_name='svhn', configs=None):
     
     return exp_dir
 
-def compute_agop_nfm_correlation(model_path, layer_indices, max_samples=None, init_model_path=None, dataset_name='svhn'):
+def compute_agop_nfm_correlation(model_path, layer_indices, max_samples=None, init_model_path=None, dataset_name='svhn', correlation_type='cosine'):
     """
     AGOP vs NFM correlation computation
     
@@ -268,6 +302,7 @@ def compute_agop_nfm_correlation(model_path, layer_indices, max_samples=None, in
         max_samples: limit samples for AGOP computation (memory management)
         init_model_path: Path to initial model (for remove_init operation)
         dataset_name: dataset to use for AGOP computation
+        correlation_type: 'cosine' or 'pearson' - method for computing correlation
     
     Returns:
         dict: {layer_idx: correlation_value}
@@ -282,6 +317,8 @@ def compute_agop_nfm_correlation(model_path, layer_indices, max_samples=None, in
     random.seed(SEED)
     np.random.seed(SEED)
     torch.cuda.manual_seed(SEED)
+    
+    print(f"Using {correlation_type.upper()} correlation method")
     
     try:
         # Read model config from path
@@ -373,11 +410,24 @@ def compute_agop_nfm_correlation(model_path, layer_indices, max_samples=None, in
             # Get layer output
             out = get_layer_output(net, trainloader, layer_idx=layer_idx, max_samples=max_samples)
             
-            # Compute AGOP (uncentered)
-            G = egop(subnet, out, centering=False)
+            # Compute AGOP based on correlation type
+            if correlation_type.lower() == 'pearson':
+                # For Pearson correlation, use centered EGOP
+                G = egop(subnet, out, centering=True)
+                print(f"    Using centered EGOP for Pearson correlation")
+            else:  # cosine (default)
+                # For Cosine similarity, use uncentered EGOP
+                G = egop(subnet, out, centering=False)
+                print(f"    Using uncentered EGOP for Cosine similarity")
             
-            # Compute correlation
-            correlation = correlate(torch.from_numpy(M), G)
+            # Compute correlation based on type
+            if correlation_type.lower() == 'pearson':
+                correlation = pearson_correlate(torch.from_numpy(M), G)
+                print(f"    Computing Pearson correlation")
+            else:  # cosine (default)
+                correlation = correlate(torch.from_numpy(M), G)  # Original cosine similarity
+                print(f"    Computing Cosine similarity")
+                
             correlations[layer_idx] = correlation.item()
             
             print(f"Layer {layer_idx} AGOP/NFM correlation: {correlation.item():.6f}")
@@ -389,7 +439,7 @@ def compute_agop_nfm_correlation(model_path, layer_indices, max_samples=None, in
     
     return correlations
 
-def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max_samples=None, weight_decay=0, dataset_name='svhn'):
+def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max_samples=None, weight_decay=0, dataset_name='svhn', correlation_type='cosine'):
     """
     Train model with comprehensive analysis
     
@@ -400,12 +450,14 @@ def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max
         val_interval: interval for saving and analysis
         max_samples: limit samples for AGOP computation (memory management)
         dataset_name: dataset to use for training
+        correlation_type: 'cosine' or 'pearson' - method for computing AGOP correlation
     """
     
     print(f"\n=== Starting Training with {optimizer_name.upper()} on {dataset_name.upper()} ===")
     print(f"Learning rate: {lr}")
     print(f"Epochs: {num_epochs}")
     print(f"Analysis interval: {val_interval}")
+    print(f"Correlation type: {correlation_type.upper()}")
     
     # Set random seed
     torch.manual_seed(SEED)
@@ -466,7 +518,8 @@ def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max
         'depth': 5,
         'act': 'relu',
         'val_interval': val_interval,
-        'init_strategy': 'original'  # Track initialization strategy
+        'init_strategy': 'original',  # Track initialization strategy
+        'correlation_type': correlation_type  # Track correlation method
     }
     
     # Setup experiment directory with detailed parameters
@@ -562,7 +615,8 @@ def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max
             try:
                 correlations = compute_agop_nfm_correlation(temp_model_path, layer_indices, 
                                                            max_samples, init_model_path=init_model_path,
-                                                           dataset_name=dataset_name)
+                                                           dataset_name=dataset_name,
+                                                           correlation_type=correlation_type)
             finally:
                 # Rename back
                 os.rename(temp_model_path, model_path)
@@ -777,6 +831,9 @@ def main():
                         help='Max samples for AGOP computation (memory management)')
     parser.add_argument('--weight_decay', type=float, default=0,
                         help='Weight decay (L2 regularization) factor (default: 0)')
+    parser.add_argument('--correlation_type', type=str, default='cosine',
+                        choices=['cosine', 'pearson'],
+                        help='Correlation type for AGOP-NFM analysis (default: cosine)')
     
     args = parser.parse_args()
     
@@ -794,7 +851,8 @@ def main():
         val_interval=args.val_interval,
         max_samples=args.max_samples,
         weight_decay=args.weight_decay,
-        dataset_name=args.dataset
+        dataset_name=args.dataset,
+        correlation_type=args.correlation_type
     )
     
     print(f"\n=== Experiment Complete ===")
