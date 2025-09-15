@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 """
 AGOP-aware Curriculum: multi-task, multi-seed experiments with plots.
-Tasks: colored_mnist, colored_fmnist, colored_cifar10
-Methods: ERM, JTT, AGC-Despur (ours), AGC-Easy
-Outputs saved under: experiments/curriculum/<task>/<timestamp>/
+Add AGC-InvCFP (counterfactual-pair curriculum with consistency).
+Saves CSV/PNG under: experiments/curriculum/<task>/<timestamp>/
 """
 import os, math, random, argparse, time, json, copy
 from datetime import datetime
@@ -33,8 +32,9 @@ def ensure_dir(path: str):
 # -----------------------
 class ColoredBinaryBase(Dataset):
     """
-    Base wrapper: takes a base dataset (image, raw_label), maps to binary y and spurious color c,
+    Base wrapper: takes a base dataset (PIL image, raw_label), maps to binary y and spurious color c,
     where P[c==y] = p_corr. Colors are cached at __init__ for reproducibility.
+    Provides counterfactual flip for each index.
     """
     def __init__(self, base_ds, make_binary_label, split: str, p_train=0.99, p_test=0.1, seed=0):
         assert split in ["train","test"]
@@ -45,8 +45,9 @@ class ColoredBinaryBase(Dataset):
 
         self.labels = []
         self.colors = []
-        for i in range(len(self.base)):
-            img, raw_y = self.base[i]
+        N = len(self.base)
+        for i in range(N):
+            _, raw_y = self.base[i]
             y = int(make_binary_label(raw_y))
             corr = rng.rand() < self.p_corr
             c = y if corr else 1 - y
@@ -57,17 +58,33 @@ class ColoredBinaryBase(Dataset):
 
     def __len__(self): return len(self.base)
 
+    def _pil_to_gray_np(self, pil_img) -> np.ndarray:
+        arr = np.array(pil_img, dtype=np.float32)/255.0  # HxW or HxWx3
+        if arr.ndim == 3 and arr.shape[2] == 3:
+            # luminance
+            arr = 0.299*arr[:,:,0] + 0.587*arr[:,:,1] + 0.114*arr[:,:,2]
+        return arr  # HxW float
+
     def _colorize_gray(self, gray: np.ndarray, c: int) -> torch.Tensor:
-        # gray: HxW float [0..1]
-        H, W = gray.shape
         R = gray if c==0 else np.zeros_like(gray)
         G = gray if c==1 else np.zeros_like(gray)
         B = np.zeros_like(gray)
-        arr = np.stack([R, G, B], axis=0) # 3xHxW
+        arr = np.stack([R, G, B], axis=0)  # 3xHxW
         return torch.from_numpy(arr.astype(np.float32))
 
+    def get_flip_tensor(self, idx: int) -> torch.Tensor:
+        """Return counterfactual color-flip tensor x_flip for sample idx (same content, color flipped)."""
+        pil_img, _ = self.base[idx]
+        gray = self._pil_to_gray_np(pil_img)
+        c_flip = 1 - int(self.colors[idx])
+        return self._colorize_gray(gray, c_flip)
+
     def __getitem__(self, idx):
-        raise NotImplementedError("Implement in subclass")
+        pil_img, _ = self.base[idx]
+        gray = self._pil_to_gray_np(pil_img)
+        y = int(self.labels[idx]); c = int(self.colors[idx])
+        x = self._colorize_gray(gray, c)
+        return x, y, c, idx
 
 class ColoredMNIST(ColoredBinaryBase):
     def __init__(self, root, split="train", p_train=0.99, p_test=0.1, seed=0, download=True):
@@ -75,50 +92,21 @@ class ColoredMNIST(ColoredBinaryBase):
         super().__init__(base, make_binary_label=lambda d: (d<5), split=split,
                          p_train=p_train, p_test=p_test, seed=seed)
 
-    def __getitem__(self, idx):
-        img, _ = self.base[idx]
-        img_np = np.array(img, dtype=np.float32) / 255.0  # HxW
-        y = int(self.labels[idx]); c = int(self.colors[idx])
-        x = self._colorize_gray(img_np, c)
-        return x, y, c, idx
-
 class ColoredFashionMNIST(ColoredBinaryBase):
     def __init__(self, root, split="train", p_train=0.99, p_test=0.1, seed=0, download=True):
         base = datasets.FashionMNIST(root=root, train=(split=="train"), download=download)
         super().__init__(base, make_binary_label=lambda d: (d<5), split=split,
                          p_train=p_train, p_test=p_test, seed=seed)
 
-    def __getitem__(self, idx):
-        img, _ = self.base[idx]
-        img_np = np.array(img, dtype=np.float32) / 255.0  # HxW
-        y = int(self.labels[idx]); c = int(self.colors[idx])
-        x = self._colorize_gray(img_np, c)
-        return x, y, c, idx
-
 class ColoredCIFAR10(ColoredBinaryBase):
-    """
-    CIFAR-10 turned into binary (animal vs vehicle) + colored gray-tint for spurious attribute.
-    animal classes: 2,3,4,5,6,7; vehicle classes: 0,1,8,9
-    """
     ANIMALS = {2,3,4,5,6,7}
     VEHICLES = {0,1,8,9}
-
     def __init__(self, root, split="train", p_train=0.995, p_test=0.1, seed=0, download=True):
         base = datasets.CIFAR10(root=root, train=(split=="train"), download=download)
         def make_binary_label(raw_y: int) -> int:
-            return 1 if raw_y in self.ANIMALS else 0  # y=1: animal, y=0: vehicle
+            return 1 if raw_y in self.ANIMALS else 0
         super().__init__(base, make_binary_label=make_binary_label, split=split,
                          p_train=p_train, p_test=p_test, seed=seed)
-        self.to_tensor = transforms.ToTensor()
-
-    def __getitem__(self, idx):
-        img, raw = self.base[idx]  # PIL
-        img_np = np.array(img, dtype=np.float32) / 255.0  # HxWx3
-        # luminance to gray
-        gray = 0.299*img_np[:,:,0] + 0.587*img_np[:,:,1] + 0.114*img_np[:,:,2]  # HxW
-        y = int(self.labels[idx]); c = int(self.colors[idx])
-        x = self._colorize_gray(gray, c)  # 3xHxW
-        return x, y, c, idx
 
 # -----------------------
 # Models
@@ -135,7 +123,8 @@ class CNNFeatSmall(nn.Module):
             nn.Conv2d(64, 128, 3, padding=1), nn.ReLU(inplace=True),
             nn.AdaptiveAvgPool2d((4,4)),
             nn.Flatten(),
-            nn.Linear(128*4*4, d_feat), nn.ReLU(inplace=True)
+            nn.Linear(128*4*4, 256), nn.ReLU(inplace=True),
+            nn.Linear(256, d_feat), nn.ReLU(inplace=True)  # 多一层稳定特征
         )
         self.classifier = nn.Linear(d_feat, num_classes)
 
@@ -155,9 +144,9 @@ def topk_basis_from_classifier(model: nn.Module, k_desired=2, eps=1e-8) -> torch
     Use W^T W to approximate AGOP subspace (NFA). Auto-select effective rank (<= num_classes).
     Returns U : [d, k]
     """
-    W = model.classifier.weight.detach()  # [C, d]
-    M = W.T @ W                           # [d, d]
-    evals, evecs = torch.linalg.eigh(M)   # ascending
+    W = model.classifier.weight.detach()
+    M = W.T @ W
+    evals, evecs = torch.linalg.eigh(M)
     if float(evals.max()) <= 0:
         return evecs[:, -1:].contiguous()
     mask = evals > (eps * float(evals.max()))
@@ -184,46 +173,57 @@ def compute_align_scores(model: nn.Module, loader: DataLoader, U: torch.Tensor) 
         x = x.to(DEVICE)
         _, z = model(x, return_feat=True)
         z = F.normalize(z, dim=1)
-        proj2 = (z @ U)
-        s = (1 - (proj2**2).sum(dim=1)).clamp(min=0.0, max=1.0).detach().cpu().numpy()
+        s = (1 - ((z @ U)**2).sum(dim=1)).clamp(min=0.0, max=1.0).detach().cpu().numpy()
         for i, sid in enumerate(idx.tolist()):
             scores[sid] = float(s[i])
     return scores
 
-def select_indices_by_curriculum(scores: Dict[int,float],
-                                 labels: Dict[int,int],
-                                 keep_ratio: float,
-                                 variant: str,
-                                 min_random_frac: float = 0.1) -> List[int]:
-    assert variant in {"agc_despur", "agc_easy"}
-    n = len(scores); m = max(1, int(n * keep_ratio))
-    pairs = sorted(scores.items(), key=lambda kv: kv[1], reverse=(variant=="agc_despur"))
-    selected = [i for i,_ in pairs[:m]]
-
-    # mix random for stability
-    remain = list(set(scores.keys()) - set(selected))
-    rnd_k = int(n * min_random_frac)
-    if rnd_k > 0 and len(remain)>0:
-        selected += random.sample(remain, min(rnd_k, len(remain)))
-    random.shuffle(selected)
-
-    # light class-balance
-    by_y = {0:[], 1:[]}
-    for i in selected:
-        by_y[labels[i]].append(i)
-    half = len(selected)//2
-    k0 = min(len(by_y[0]), half)
-    k1 = min(len(by_y[1]), len(selected)-k0)
-    balanced = by_y[0][:k0] + by_y[1][:k1]
-    if len(balanced) >= int(0.6*len(selected)):
-        selected = balanced
-    return selected
-
+# NEW: counterfactual-pair sensitivity Δ_U
 @torch.no_grad()
-def direction_alignment(model: nn.Module, loader: DataLoader) -> Tuple[float, float]:
+def compute_pair_sensitivity(model: nn.Module, loader: DataLoader, dataset: Dataset,
+                             U: torch.Tensor, probe_frac: float = 1.0) -> Dict[int, float]:
     """
-    alpha: alignment to label direction; beta: alignment to color (spurious) direction.
-    统一在 CPU 上计算，避免 CPU/GPU 混用导致的 dot 报错。
+    For each idx in (a probed subset of) loader, compute Δ_U(i) = ||U^T z - U^T z_flip||^2 / (||z||^2 + ||z_flip||^2)
+    Return dict idx -> Δ_U (higher means more spurious-sensitive).
+    """
+    model.eval()
+    U = U.to(DEVICE)
+    scores = {}
+    rng = np.random.RandomState(0)
+    for x, y, c, idx in loader:
+        idx_list = idx.tolist()
+        if probe_frac < 1.0:
+            take = rng.rand(len(idx_list)) < probe_frac
+            idx_list = [idx_list[i] for i,b in enumerate(take) if b]
+            if len(idx_list) == 0:
+                continue
+            # reselect the tensors accordingly
+            mask = torch.tensor([i in set(idx_list) for i in idx.tolist()], dtype=torch.bool)
+            x = x[mask]; y = y[mask]; c = c[mask]; idx = idx[mask]
+
+        x = x.to(DEVICE)
+        # build flip batch
+        x_flip = torch.stack([dataset.get_flip_tensor(int(i)) for i in idx_list], dim=0).to(DEVICE)
+
+        _, z = model(x, return_feat=True)
+        _, zf = model(x_flip, return_feat=True)
+        z  = F.normalize(z, dim=1)
+        zf = F.normalize(zf, dim=1)
+        p  = z @ U
+        pf = zf @ U
+        num = ((p - pf)**2).sum(dim=1)           # energy change on U
+        den = (z.pow(2).sum(dim=1) + zf.pow(2).sum(dim=1) + 1e-8)
+        delta = (num / den).detach().cpu().numpy()
+        for i, sid in enumerate(idx_list):
+            scores[sid] = float(delta[i])
+    return scores
+
+# FIX: device-safe direction alignment
+@torch.no_grad()
+def direction_alignment(model: nn.Module, loader: DataLoader) -> Tuple[float,float]:
+    """
+    alpha: alignment to label direction; beta: alignment to color direction.
+    Compute on CPU to avoid device mismatch.
     """
     model.eval()
     Z, Ys, Cs = [], [], []
@@ -233,34 +233,23 @@ def direction_alignment(model: nn.Module, loader: DataLoader) -> Tuple[float, fl
         Z.append(z.detach().cpu())
         Ys.append(y.detach().cpu())
         Cs.append(c.detach().cpu())
-
-    Z = torch.cat(Z).to(torch.float32)  # [N, d] on CPU
-    Ys = torch.cat(Ys)                  # int64 CPU
-    Cs = torch.cat(Cs)                  # int64 CPU
-
-    # 若某一类/颜色在采样子集极端稀少，做个保护（避免 NaN）
+    Z = torch.cat(Z).to(torch.float32)
+    Ys = torch.cat(Ys); Cs = torch.cat(Cs)
     if (Ys==0).sum()==0 or (Ys==1).sum()==0 or (Cs==0).sum()==0 or (Cs==1).sum()==0:
         return 0.0, 0.0
-
     z0 = Z[Ys==0].mean(0); z1 = Z[Ys==1].mean(0)
-    u_y = F.normalize(z1 - z0, dim=0)   # CPU float32
-
+    u_y = F.normalize(z1 - z0, dim=0)
     zc0 = Z[Cs==0].mean(0); zc1 = Z[Cs==1].mean(0)
-    u_c = F.normalize(zc1 - zc0, dim=0) # CPU float32
-
-    # W^T W 也转到 CPU 再做特征分解，保证和 u_y/u_c 同设备
+    u_c = F.normalize(zc1 - zc0, dim=0)
     W = model.classifier.weight.detach().cpu().to(torch.float32)
     M = W.T @ W
-    evals, evecs = torch.linalg.eigh(M)   # CPU
-    v1 = F.normalize(evecs[:, -1], dim=0) # CPU float32
-
+    evals, evecs = torch.linalg.eigh(M)
+    v1 = F.normalize(evecs[:, -1], dim=0)
     alpha = float(torch.abs(torch.dot(v1, u_y)))
     beta  = float(torch.abs(torch.dot(v1, u_c)))
-    # 数值保护：若出现极罕见的 NaN，回退到 0
     if not np.isfinite(alpha): alpha = 0.0
     if not np.isfinite(beta):  beta  = 0.0
     return alpha, beta
-
 
 # -----------------------
 # Train / Eval
@@ -316,7 +305,6 @@ def train_erm(model, train_loader, test_loader, epochs=30, lr=3e-4, wd=1e-4):
     return model, logs
 
 def train_jtt(train_set, test_loader, total_epochs=30, stage1_epochs=5, upsample=10, lr=3e-4):
-    # Stage 1: ERM short
     base = CNNFeatSmall().to(DEVICE)
     opt = torch.optim.AdamW(base.parameters(), lr=lr)
     crit = nn.CrossEntropyLoss()
@@ -330,7 +318,6 @@ def train_jtt(train_set, test_loader, total_epochs=30, stage1_epochs=5, upsample
         logs.append({"epoch": ep, "te_acc": te_acc, "worst_group_acc": wg, "H": H, "alpha": a, "beta": b})
         print(f"[JTT-Stage1] ep{ep:02d} te_acc={te_acc:.3f} worstG={wg:.3f}")
 
-    # Identify misclassified indices on the full train set using base
     base.eval()
     mis_idx=[]
     with torch.no_grad():
@@ -340,13 +327,12 @@ def train_jtt(train_set, test_loader, total_epochs=30, stage1_epochs=5, upsample
             mis = (pred!=y).cpu().numpy()
             mis_idx += list(np.array(idx)[mis])
 
-    weights = np.ones(len(train_set), dtype=np.float32)
-    for i in mis_idx:
-        weights[i] *= upsample
+    weights = torch.ones(len(train_set), dtype=torch.double)
+    if len(mis_idx) > 0:
+        weights[torch.tensor(mis_idx, dtype=torch.long)] *= float(upsample)
     sampler = WeightedRandomSampler(weights, num_samples=len(train_set), replacement=True)
     train_loader = DataLoader(train_set, batch_size=256, sampler=sampler, num_workers=2, pin_memory=True)
 
-    # Stage 2: re-train new model with up-weighted hard examples
     model = CNNFeatSmall().to(DEVICE)
     opt2 = torch.optim.AdamW(model.parameters(), lr=lr)
     for ep in range(stage1_epochs+1, total_epochs+1):
@@ -358,6 +344,91 @@ def train_jtt(train_set, test_loader, total_epochs=30, stage1_epochs=5, upsample
         print(f"[JTT] ep{ep:02d} te_acc={te_acc:.3f} worstG={wg:.3f} H={H:.3f}")
     return model, logs
 
+def _unwrap_colored_dataset(ds: Dataset) -> ColoredBinaryBase:
+    base = ds
+    while isinstance(base, Subset):
+        base = base.dataset
+    assert isinstance(base, ColoredBinaryBase), "This method needs Colored* dataset."
+    return base
+
+# NEW: AGC-InvCFP training
+def train_agc_invcfp(train_set, test_loader, total_epochs=30, lr=3e-4,
+                     keep_start=0.3, keep_end=0.9, k_desired=2,
+                     probe_frac=0.6, lambda_cons=0.2):
+    """
+    Counterfactual-pair curriculum:
+      - score by Δ_U = ||U^T z - U^T z_flip||^2 / (||z||^2 + ||z_flip||^2)
+      - select top keep_ratio to form a subset each epoch
+      - train with CE on (x) and (x_flip) + consistency loss on features
+    """
+    dataset_base = _unwrap_colored_dataset(train_set)
+    model = CNNFeatSmall().to(DEVICE)
+    opt = torch.optim.AdamW(model.parameters(), lr=lr)
+    crit = nn.CrossEntropyLoss()
+    base_loader = DataLoader(train_set, batch_size=256, shuffle=False, num_workers=2, pin_memory=True)
+
+    # labels dict for mild class-balance
+    labels = {}
+    for _, y, _, idx in base_loader:
+        for i, sid in enumerate(idx.tolist()):
+            labels[sid] = int(y[i])
+
+    logs=[]
+    for ep in range(1, total_epochs+1):
+        keep_ratio = min(keep_end, keep_start + (keep_end - keep_start) * (ep-1)/(total_epochs-1))
+
+        # AGOP subspace
+        U = topk_basis_from_classifier(model, k_desired=k_desired)
+
+        # Δ_U sensitivity
+        delta = compute_pair_sensitivity(model, base_loader, dataset_base, U, probe_frac=probe_frac)
+        n = len(delta); m = max(1, int(n * keep_ratio))
+        # select top-m by Δ_U
+        top_idx = [i for i,_ in sorted(delta.items(), key=lambda kv: kv[1], reverse=True)[:m]]
+
+        # mix in small random for stability
+        remain = list(set(delta.keys()) - set(top_idx))
+        if len(remain) > 0:
+            top_idx += random.sample(remain, min(int(0.1*n), len(remain)))
+
+        subset = Subset(train_set, top_idx)
+        train_loader = DataLoader(subset, batch_size=256, shuffle=True, num_workers=2, pin_memory=True)
+
+        # one epoch with pair-consistency
+        model.train()
+        total, correct, total_loss = 0, 0, 0.0
+        for x, y, c, idx in train_loader:
+            x, y = x.to(DEVICE), y.to(DEVICE)
+            x_flip = torch.stack([dataset_base.get_flip_tensor(int(i)) for i in idx.tolist()], dim=0).to(DEVICE)
+
+            logits, z   = model(x, return_feat=True)
+            logits_f, zf = model(x_flip, return_feat=True)
+
+            ce = crit(logits, y) + crit(logits_f, y)
+            cons = F.mse_loss(z, zf)
+            loss = ce + lambda_cons * cons
+
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            opt.step()
+
+            pred = logits.argmax(1)
+            total += y.size(0)
+            correct += (pred==y).sum().item()
+            total_loss += float(loss.item()) * y.size(0)
+
+        # eval
+        te_loss, te_acc = run_epoch(model, test_loader, None, crit, train=False)
+        wg, _, _ = eval_worst_group(model, test_loader)
+        H = spectral_entropy(model)
+        a, b = direction_alignment(model, base_loader)
+        logs.append({"epoch": ep, "keep_ratio": keep_ratio,
+                     "tr_acc": correct/total if total>0 else 0.0,
+                     "te_acc": te_acc, "worst_group_acc": wg, "H": H, "alpha": a, "beta": b})
+        print(f"[AGC_INV-CFP] ep{ep:02d} keep={keep_ratio:.2f} te_acc={te_acc:.3f} worstG={wg:.3f} H={H:.3f} alpha={a:.3f} beta={b:.3f}")
+
+    return model, logs
+
 def train_agc(train_set, test_loader, variant="agc_despur",
               total_epochs=30, lr=3e-4, keep_start=0.3, keep_end=0.9, k_desired=2):
     assert variant in {"agc_despur","agc_easy"}
@@ -366,7 +437,6 @@ def train_agc(train_set, test_loader, variant="agc_despur",
     crit = nn.CrossEntropyLoss()
     base_loader = DataLoader(train_set, batch_size=256, shuffle=False, num_workers=2, pin_memory=True)
 
-    # labels dict for stratified sampling
     labels = {}
     for _, y, _, idx in base_loader:
         for i, sid in enumerate(idx.tolist()):
@@ -374,17 +444,12 @@ def train_agc(train_set, test_loader, variant="agc_despur",
 
     logs=[]
     for ep in range(1, total_epochs+1):
-        # pacing
         keep_ratio = min(keep_end, keep_start + (keep_end - keep_start) * (ep-1)/(total_epochs-1))
-
-        # AGOP subspace
         U = topk_basis_from_classifier(model, k_desired=k_desired)
-
-        # alignment scores
         scores = compute_align_scores(model, base_loader, U)
-        selected_idx = select_indices_by_curriculum(scores, labels, keep_ratio, variant=variant, min_random_frac=0.1)
+        selected = select_indices_by_curriculum(scores, labels, keep_ratio, variant=variant, min_random_frac=0.1)
 
-        subset = Subset(train_set, selected_idx)
+        subset = Subset(train_set, selected)
         train_loader = DataLoader(subset, batch_size=256, shuffle=True, num_workers=2, pin_memory=True)
         tr_loss, tr_acc = run_epoch(model, train_loader, opt, crit, train=True)
 
@@ -412,7 +477,6 @@ def build_task(task: str, root="./data", seed=0, p_train=0.99, p_test=0.1,
         te = ColoredFashionMNIST(root, "test",  p_train=p_train, p_test=p_test, seed=seed+1, download=download)
         batch = 256
     elif task=="colored_cifar10":
-        # 更强伪相关：默认 p_train=0.995
         tr = ColoredCIFAR10(root, "train", p_train=max(p_train, 0.995), p_test=p_test, seed=seed, download=download)
         te = ColoredCIFAR10(root, "test",  p_train=max(p_train, 0.995), p_test=p_test, seed=seed+1, download=download)
         batch = 128
@@ -442,11 +506,6 @@ def write_csv(path: str, logs: List[Dict]):
             writer.writerow(row)
 
 def aggregate_across_seeds(results_per_seed: List[List[Dict]], metric: str, max_epoch=None):
-    """
-    results_per_seed: list over seeds -> list of dict logs with 'epoch' and metric
-    Returns: epochs, mean, low95, high95
-    """
-    # ensure equal length by truncating to min length
     min_len = min(len(logs) for logs in results_per_seed)
     if max_epoch is not None:
         min_len = min(min_len, max_epoch)
@@ -504,7 +563,8 @@ def run_all(task: str, seeds: List[int], outdir: str,
         "ERM": [],
         "JTT": [],
         "AGC-Despur": [],
-        "AGC-Easy": []
+        "AGC-Easy": [],
+        "AGC-InvCFP": []  # NEW
     }
 
     for s in seeds:
@@ -535,6 +595,13 @@ def run_all(task: str, seeds: List[int], outdir: str,
                                             keep_start=0.3, keep_end=0.9, k_desired=2)
         write_csv(os.path.join(outdir, f"AGC_Easy_seed{s}.csv"), agc_e_logs)
         results_by_method["AGC-Easy"].append(agc_e_logs)
+
+        # NEW: AGC-InvCFP
+        agc_inv_model, agc_inv_logs = train_agc_invcfp(tr_set, te_loader, total_epochs=epochs, lr=lr,
+                                                       keep_start=0.3, keep_end=0.9, k_desired=2,
+                                                       probe_frac=0.6, lambda_cons=0.2)
+        write_csv(os.path.join(outdir, f"AGC_InvCFP_seed{s}.csv"), agc_inv_logs)
+        results_by_method["AGC-InvCFP"].append(agc_inv_logs)
 
     # Aggregation & plots
     agg = {}
@@ -582,9 +649,7 @@ def main():
     parser.add_argument("--out-root", type=str, default="experiments/curriculum")
     args = parser.parse_args()
 
-    # build seeds list
     seeds = list(range(args.seeds))
-
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     for task in args.tasks:
         outdir = os.path.join(args.out_root, task, timestamp)
