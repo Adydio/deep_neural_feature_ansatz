@@ -220,31 +220,47 @@ def select_indices_by_curriculum(scores: Dict[int,float],
     return selected
 
 @torch.no_grad()
-def direction_alignment(model: nn.Module, loader: DataLoader) -> Tuple[float,float]:
+def direction_alignment(model: nn.Module, loader: DataLoader) -> Tuple[float, float]:
     """
-    alpha: alignment to label direction; beta: alignment to color direction.
+    alpha: alignment to label direction; beta: alignment to color (spurious) direction.
+    统一在 CPU 上计算，避免 CPU/GPU 混用导致的 dot 报错。
     """
     model.eval()
     Z, Ys, Cs = [], [], []
     for x, y, c, _ in loader:
         x = x.to(DEVICE)
         _, z = model(x, return_feat=True)
-        Z.append(z.detach().cpu()); Ys.append(y); Cs.append(c)
-    Z = torch.cat(Z); Ys = torch.cat(Ys); Cs = torch.cat(Cs)
+        Z.append(z.detach().cpu())
+        Ys.append(y.detach().cpu())
+        Cs.append(c.detach().cpu())
+
+    Z = torch.cat(Z).to(torch.float32)  # [N, d] on CPU
+    Ys = torch.cat(Ys)                  # int64 CPU
+    Cs = torch.cat(Cs)                  # int64 CPU
+
+    # 若某一类/颜色在采样子集极端稀少，做个保护（避免 NaN）
+    if (Ys==0).sum()==0 or (Ys==1).sum()==0 or (Cs==0).sum()==0 or (Cs==1).sum()==0:
+        return 0.0, 0.0
+
     z0 = Z[Ys==0].mean(0); z1 = Z[Ys==1].mean(0)
-    u_y = F.normalize(z1 - z0, dim=0)
+    u_y = F.normalize(z1 - z0, dim=0)   # CPU float32
 
     zc0 = Z[Cs==0].mean(0); zc1 = Z[Cs==1].mean(0)
-    u_c = F.normalize(zc1 - zc0, dim=0)
+    u_c = F.normalize(zc1 - zc0, dim=0) # CPU float32
 
-    W = model.classifier.weight.detach()
+    # W^T W 也转到 CPU 再做特征分解，保证和 u_y/u_c 同设备
+    W = model.classifier.weight.detach().cpu().to(torch.float32)
     M = W.T @ W
-    evals, evecs = torch.linalg.eigh(M)
-    v1 = F.normalize(evecs[:, -1], dim=0)
+    evals, evecs = torch.linalg.eigh(M)   # CPU
+    v1 = F.normalize(evecs[:, -1], dim=0) # CPU float32
 
     alpha = float(torch.abs(torch.dot(v1, u_y)))
     beta  = float(torch.abs(torch.dot(v1, u_c)))
+    # 数值保护：若出现极罕见的 NaN，回退到 0
+    if not np.isfinite(alpha): alpha = 0.0
+    if not np.isfinite(beta):  beta  = 0.0
     return alpha, beta
+
 
 # -----------------------
 # Train / Eval
