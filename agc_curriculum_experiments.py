@@ -15,6 +15,74 @@ from torch.utils.data import Dataset, DataLoader, Subset, WeightedRandomSampler
 from torchvision import datasets, transforms
 import matplotlib.pyplot as plt
 
+# === ADD: curriculum selector ===
+from typing import Dict, List
+
+def select_indices_by_curriculum(scores: Dict[int, float],
+                                 labels: Dict[int, int],
+                                 keep_ratio: float,
+                                 variant: str = "agc_despur",
+                                 min_random_frac: float = 0.1) -> List[int]:
+    """
+    根据对齐分数 s(i) 选择样本：
+      - agc_despur: 选 s(i) 大的（与当前 AGOP 子空间不对齐，正交优先）
+      - agc_easy:   选 s(i) 小的（已对齐，容易样本）
+    另外混入一小部分随机样本，且做一次简单的类均衡裁剪。
+    返回的是**底层数据集的索引**（即 __getitem__ 返回的 idx）。
+    """
+    assert variant in {"agc_despur", "agc_easy"}
+    n = len(scores)
+    m = max(1, int(n * keep_ratio))
+
+    # 排序选择
+    pairs = sorted(scores.items(), key=lambda kv: kv[1], reverse=(variant == "agc_despur"))
+    selected = [i for i, _ in pairs[:m]]
+
+    # 混入随机，避免过拟合选择噪声
+    remain = list(set(scores.keys()) - set(selected))
+    rnd_k = int(n * min_random_frac)
+    if rnd_k > 0 and len(remain) > 0:
+        import random
+        selected += random.sample(remain, min(rnd_k, len(remain)))
+
+    # 轻量类均衡裁剪
+    by_y = {0: [], 1: []}
+    for i in selected:
+        by_y[labels[i]].append(i)
+    half = len(selected) // 2
+    k0 = min(len(by_y[0]), half)
+    k1 = min(len(by_y[1]), len(selected) - k0)
+    balanced = by_y[0][:k0] + by_y[1][:k1]
+    if len(balanced) >= int(0.6 * len(selected)):
+        selected = balanced
+
+    # 去重与打乱
+    selected = list(dict.fromkeys(selected))
+    random.shuffle(selected)
+    return selected
+
+
+# === ADD: safe subset builder from base indices ===
+from torch.utils.data import Subset
+
+def subset_from_base_indices(train_set, base_indices: List[int]) -> Subset:
+    """
+    给定 train_set（可能是 Subset）和一组**底层数据集**索引 base_indices，
+    返回一个相对于 train_set 的 Subset 视图。
+    """
+    if isinstance(train_set, Subset):
+        # train_set.indices -> 底层索引列表
+        base_to_pos = {int(b): i for i, b in enumerate(train_set.indices)}
+        pos = [base_to_pos[i] for i in base_indices if int(i) in base_to_pos]
+        if len(pos) == 0:
+            # 兜底：若映射后为空，退回全量，避免训练崩掉
+            pos = list(range(len(train_set)))
+        return Subset(train_set, pos)
+    else:
+        # 直接对底层数据集切片
+        return Subset(train_set, base_indices)
+
+
 # -----------------------
 # Utils & Repro
 # -----------------------
@@ -391,7 +459,7 @@ def train_agc_invcfp(train_set, test_loader, total_epochs=30, lr=3e-4,
         if len(remain) > 0:
             top_idx += random.sample(remain, min(int(0.1*n), len(remain)))
 
-        subset = Subset(train_set, top_idx)
+        subset = subset_from_base_indices(train_set, top_idx)
         train_loader = DataLoader(subset, batch_size=256, shuffle=True, num_workers=2, pin_memory=True)
 
         # one epoch with pair-consistency
@@ -449,7 +517,7 @@ def train_agc(train_set, test_loader, variant="agc_despur",
         scores = compute_align_scores(model, base_loader, U)
         selected = select_indices_by_curriculum(scores, labels, keep_ratio, variant=variant, min_random_frac=0.1)
 
-        subset = Subset(train_set, selected)
+        subset = subset_from_base_indices(train_set, selected)
         train_loader = DataLoader(subset, batch_size=256, shuffle=True, num_workers=2, pin_memory=True)
         tr_loss, tr_acc = run_epoch(model, train_loader, opt, crit, train=True)
 
