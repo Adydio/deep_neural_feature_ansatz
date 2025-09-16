@@ -196,12 +196,9 @@ def estimate_agop_topk(model: nn.Module, loader: DataLoader, tap="pre_proj2",
     """
     model.eval()
     G = None
-    seen = 0
     C = None
-    batches = 0
     for b, (x, y, c, idx) in enumerate(loader):
         if b >= max_batches: break
-        batches += 1
         x = x.to(device)
         with torch.no_grad():
             logits, h = model.forward_with_tap(x, tap=tap)  # h: [B, D]
@@ -220,7 +217,6 @@ def estimate_agop_topk(model: nn.Module, loader: DataLoader, tap="pre_proj2",
             G = G_batch.detach()
         else:
             G += G_batch.detach()
-        seen += x.size(0)
 
     if G is None:
         # fallback
@@ -400,7 +396,7 @@ def eval_flip_acc(model, test_set, batch_size=256):
 def eval_perm_acc(model, test_loader, seed=0):
     """Shuffle test labels; accuracy should be near chance (0.5) if无泄漏。"""
     rng = np.random.RandomState(seed)
-    model.eval(); tot=0; corr=0
+    model.eval(); 
     all_y = []
     all_pred = []
     for x, y, c, idx in test_loader:
@@ -415,31 +411,48 @@ def eval_perm_acc(model, test_loader, seed=0):
     tot  = len(all_y)
     return corr / max(1, tot)
 
-@torch.no_grad()
 def eval_deltaU_mean_tap(model, test_loader, test_set, k=2, tap="pre_proj2",
                          probe_frac=0.5, agop_eval_batches=2):
+    """
+    NOTE: 需要梯度来估计 AGOP 的 top-k，因此这里不再用 @torch.no_grad()；
+    仅在 estimate_agop_topk 调用时用 enable_grad()，其余步骤仍是无梯度的。
+    """
     base = test_set
     while isinstance(base, Subset):
         base = base.dataset
-    U = estimate_agop_topk(model, test_loader, tap=tap, k=k, max_batches=agop_eval_batches)
+    model.eval()
+    # 只在 AGOP 估计时启用梯度
+    with torch.enable_grad():
+        U = estimate_agop_topk(model, test_loader, tap=tap, k=k, max_batches=agop_eval_batches)
+    # 下游敏感度评估无需梯度
     d = compute_pair_sensitivity_tap(model, test_loader, base, U, tap=tap, probe_frac=probe_frac)
     return float(np.mean(list(d.values()))) if len(d)>0 else float("nan")
 
 def check_train_test_overlap(train_set, test_set) -> int:
-    def unwrap_indices(ds):
-        if isinstance(ds, Subset):
-            base_idx = set(int(i) for i in ds.indices)
-            base = ds.dataset
-        else:
-            base = ds
-            base_idx = set(range(len(base)))
-        # try to unwrap nested subset
+    """
+    若 train/test 来自不同底层 dataset 对象（常见于 MNIST train=True vs test=False），
+    直接返回 0；仅当二者确为同一底层对象且通过 Subset 切分时，再计算索引交集。
+    """
+    def unwrap_base(ds):
+        base = ds
         while isinstance(base, Subset):
             base = base.dataset
-        return base_idx
-    tr_idx = unwrap_indices(train_set)
-    te_idx = unwrap_indices(test_set)
-    return len(tr_idx & te_idx)
+        return base
+
+    base_tr = unwrap_base(train_set)
+    base_te = unwrap_base(test_set)
+    if base_tr is not base_te:
+        return 0  # 不同对象，无重叠
+
+    def indices_of(ds):
+        if isinstance(ds, Subset):
+            return set(int(i) for i in ds.indices)
+        else:
+            return set(range(len(ds)))
+
+    idx_tr = indices_of(train_set)
+    idx_te = indices_of(test_set)
+    return len(idx_tr & idx_te)
 
 def color_only_baseline_acc(loader) -> float:
     """Use c or 1-c to predict y on test set, take the better."""
