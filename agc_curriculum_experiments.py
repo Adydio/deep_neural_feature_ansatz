@@ -1,90 +1,27 @@
 # -*- coding: utf-8 -*-
 """
 AGOP-aware Curriculum: multi-task, multi-seed experiments with plots.
-Add AGC-InvCFP (counterfactual-pair curriculum with consistency).
+
+Compare: ERM, JTT, AGC-InvCFP-old (z + W^T W + full MSE), AGC-InvCFP-new (tap h_l + AGOP + projection MSE)
+Tasks: colored_mnist, colored_fmnist, colored_kmnist, colored_cifar10
+
 Saves CSV/PNG under: experiments/curriculum/<task>/<timestamp>/
 """
-import os, math, random, argparse, time, json, copy
+
+import os, math, random, argparse, json
 from datetime import datetime
 from typing import Dict, List, Tuple
+
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader, Subset, WeightedRandomSampler
-from torchvision import datasets, transforms
+from torchvision import datasets
 import matplotlib.pyplot as plt
 
-# === ADD: curriculum selector ===
-from typing import Dict, List
-
-def select_indices_by_curriculum(scores: Dict[int, float],
-                                 labels: Dict[int, int],
-                                 keep_ratio: float,
-                                 variant: str = "agc_despur",
-                                 min_random_frac: float = 0.1) -> List[int]:
-    """
-    根据对齐分数 s(i) 选择样本：
-      - agc_despur: 选 s(i) 大的（与当前 AGOP 子空间不对齐，正交优先）
-      - agc_easy:   选 s(i) 小的（已对齐，容易样本）
-    另外混入一小部分随机样本，且做一次简单的类均衡裁剪。
-    返回的是**底层数据集的索引**（即 __getitem__ 返回的 idx）。
-    """
-    assert variant in {"agc_despur", "agc_easy"}
-    n = len(scores)
-    m = max(1, int(n * keep_ratio))
-
-    # 排序选择
-    pairs = sorted(scores.items(), key=lambda kv: kv[1], reverse=(variant == "agc_despur"))
-    selected = [i for i, _ in pairs[:m]]
-
-    # 混入随机，避免过拟合选择噪声
-    remain = list(set(scores.keys()) - set(selected))
-    rnd_k = int(n * min_random_frac)
-    if rnd_k > 0 and len(remain) > 0:
-        import random
-        selected += random.sample(remain, min(rnd_k, len(remain)))
-
-    # 轻量类均衡裁剪
-    by_y = {0: [], 1: []}
-    for i in selected:
-        by_y[labels[i]].append(i)
-    half = len(selected) // 2
-    k0 = min(len(by_y[0]), half)
-    k1 = min(len(by_y[1]), len(selected) - k0)
-    balanced = by_y[0][:k0] + by_y[1][:k1]
-    if len(balanced) >= int(0.6 * len(selected)):
-        selected = balanced
-
-    # 去重与打乱
-    selected = list(dict.fromkeys(selected))
-    random.shuffle(selected)
-    return selected
-
-
-# === ADD: safe subset builder from base indices ===
-from torch.utils.data import Subset
-
-def subset_from_base_indices(train_set, base_indices: List[int]) -> Subset:
-    """
-    给定 train_set（可能是 Subset）和一组**底层数据集**索引 base_indices，
-    返回一个相对于 train_set 的 Subset 视图。
-    """
-    if isinstance(train_set, Subset):
-        # train_set.indices -> 底层索引列表
-        base_to_pos = {int(b): i for i, b in enumerate(train_set.indices)}
-        pos = [base_to_pos[i] for i in base_indices if int(i) in base_to_pos]
-        if len(pos) == 0:
-            # 兜底：若映射后为空，退回全量，避免训练崩掉
-            pos = list(range(len(train_set)))
-        return Subset(train_set, pos)
-    else:
-        # 直接对底层数据集切片
-        return Subset(train_set, base_indices)
-
-
 # -----------------------
-# Utils & Repro
+# Small utilities
 # -----------------------
 def set_seed(seed: int):
     random.seed(seed); np.random.seed(seed); torch.manual_seed(seed); torch.cuda.manual_seed_all(seed)
@@ -95,14 +32,25 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 def ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
 
+# === Subset 构造助手：把“底层索引”映射为当前 train_set 的位置索引 ===
+def subset_from_base_indices(train_set, base_indices: List[int]) -> Subset:
+    if isinstance(train_set, Subset):
+        base_to_pos = {int(b): i for i, b in enumerate(train_set.indices)}
+        pos = [base_to_pos[i] for i in base_indices if int(i) in base_to_pos]
+        if len(pos) == 0:
+            pos = list(range(len(train_set)))
+        return Subset(train_set, pos)
+    else:
+        return Subset(train_set, base_indices)
+
 # -----------------------
 # Spurious-color datasets
 # -----------------------
 class ColoredBinaryBase(Dataset):
     """
-    Base wrapper: takes a base dataset (PIL image, raw_label), maps to binary y and spurious color c,
-    where P[c==y] = p_corr. Colors are cached at __init__ for reproducibility.
-    Provides counterfactual flip for each index.
+    Wrap a base dataset (PIL image, raw_label) into binary label y and spurious color c,
+    with P[c==y] = p_corr. Colors are cached at __init__ for reproducibility.
+    Provides counterfactual color-flip for each index.
     """
     def __init__(self, base_ds, make_binary_label, split: str, p_train=0.99, p_test=0.1, seed=0):
         assert split in ["train","test"]
@@ -113,14 +61,12 @@ class ColoredBinaryBase(Dataset):
 
         self.labels = []
         self.colors = []
-        N = len(self.base)
-        for i in range(N):
+        for i in range(len(self.base)):
             _, raw_y = self.base[i]
             y = int(make_binary_label(raw_y))
             corr = rng.rand() < self.p_corr
             c = y if corr else 1 - y
-            self.labels.append(y)
-            self.colors.append(c)
+            self.labels.append(y); self.colors.append(c)
         self.labels = np.array(self.labels, dtype=np.int64)
         self.colors = np.array(self.colors, dtype=np.int64)
 
@@ -129,19 +75,16 @@ class ColoredBinaryBase(Dataset):
     def _pil_to_gray_np(self, pil_img) -> np.ndarray:
         arr = np.array(pil_img, dtype=np.float32)/255.0  # HxW or HxWx3
         if arr.ndim == 3 and arr.shape[2] == 3:
-            # luminance
             arr = 0.299*arr[:,:,0] + 0.587*arr[:,:,1] + 0.114*arr[:,:,2]
-        return arr  # HxW float
+        return arr
 
     def _colorize_gray(self, gray: np.ndarray, c: int) -> torch.Tensor:
         R = gray if c==0 else np.zeros_like(gray)
         G = gray if c==1 else np.zeros_like(gray)
         B = np.zeros_like(gray)
-        arr = np.stack([R, G, B], axis=0)  # 3xHxW
-        return torch.from_numpy(arr.astype(np.float32))
+        return torch.from_numpy(np.stack([R, G, B], axis=0).astype(np.float32))
 
     def get_flip_tensor(self, idx: int) -> torch.Tensor:
-        """Return counterfactual color-flip tensor x_flip for sample idx (same content, color flipped)."""
         pil_img, _ = self.base[idx]
         gray = self._pil_to_gray_np(pil_img)
         c_flip = 1 - int(self.colors[idx])
@@ -166,6 +109,12 @@ class ColoredFashionMNIST(ColoredBinaryBase):
         super().__init__(base, make_binary_label=lambda d: (d<5), split=split,
                          p_train=p_train, p_test=p_test, seed=seed)
 
+class ColoredKMNIST(ColoredBinaryBase):
+    def __init__(self, root, split="train", p_train=0.99, p_test=0.1, seed=0, download=True):
+        base = datasets.KMNIST(root=root, train=(split=="train"), download=download)
+        super().__init__(base, make_binary_label=lambda d: (d<5), split=split,
+                         p_train=p_train, p_test=p_test, seed=seed)
+
 class ColoredCIFAR10(ColoredBinaryBase):
     ANIMALS = {2,3,4,5,6,7}
     VEHICLES = {0,1,8,9}
@@ -177,41 +126,58 @@ class ColoredCIFAR10(ColoredBinaryBase):
                          p_train=p_train, p_test=p_test, seed=seed)
 
 # -----------------------
-# Models
+# Model (with a "tap" to expose an intermediate representation h_l)
 # -----------------------
 class CNNFeatSmall(nn.Module):
-    """For 32x32 or 28x28, light CNN with feature head."""
+    """Light CNN with a feature head (for 28x28 or 32x32), exposing a tap 'pre_proj2' (dim=256)."""
     def __init__(self, d_feat=256, num_classes=2):
         super().__init__()
-        self.feat = nn.Sequential(
+        self.block = nn.Sequential(
             nn.Conv2d(3, 32, 3, padding=1), nn.ReLU(inplace=True),
-            nn.MaxPool2d(2),  # 14 or 16
+            nn.MaxPool2d(2),
             nn.Conv2d(32, 64, 3, padding=1), nn.ReLU(inplace=True),
-            nn.MaxPool2d(2),  # 7 or 8
+            nn.MaxPool2d(2),
             nn.Conv2d(64, 128, 3, padding=1), nn.ReLU(inplace=True),
             nn.AdaptiveAvgPool2d((4,4)),
             nn.Flatten(),
-            nn.Linear(128*4*4, 256), nn.ReLU(inplace=True),
-            nn.Linear(256, d_feat), nn.ReLU(inplace=True)  # 多一层稳定特征
         )
+        self.proj1 = nn.Sequential(nn.Linear(128*4*4, 256), nn.ReLU(inplace=True))  # tap here
+        self.proj2 = nn.Sequential(nn.Linear(256, d_feat), nn.ReLU(inplace=True))
         self.classifier = nn.Linear(d_feat, num_classes)
 
-    def forward(self, x, return_feat=False):
-        z = self.feat(x)
+    def forward_with_tap(self, x, tap="pre_proj2", return_all=False):
+        h0 = self.block(x)              # [B, 128*4*4]
+        h1 = self.proj1(h0)             # tap: [B, 256]
+        z  = self.proj2(h1)             # [B, d_feat]
         logits = self.classifier(z)
+        if return_all:
+            return logits, h0, h1, z
+        if tap == "pre_proj2":
+            return logits, h1
+        elif tap == "flat":
+            return logits, h0
+        elif tap == "feat":
+            return logits, z
+        else:
+            raise ValueError(f"Unknown tap: {tap}")
+
+    def head_from_tap(self, h):  # logits from a given tap h
+        z  = self.proj2(h)
+        logits = self.classifier(z)
+        return logits
+
+    def forward(self, x, return_feat=False):
+        logits, z = self.forward_with_tap(x, tap="feat")
         if return_feat:
             return logits, z
         return logits
 
 # -----------------------
-# AGOP utilities
+# AGOP / NFA utilities
 # -----------------------
 @torch.no_grad()
 def topk_basis_from_classifier(model: nn.Module, k_desired=2, eps=1e-8) -> torch.Tensor:
-    """
-    Use W^T W to approximate AGOP subspace (NFA). Auto-select effective rank (<= num_classes).
-    Returns U : [d, k]
-    """
+    """For the last linear layer only (W^T W)."""
     W = model.classifier.weight.detach()
     M = W.T @ W
     evals, evecs = torch.linalg.eigh(M)
@@ -220,8 +186,51 @@ def topk_basis_from_classifier(model: nn.Module, k_desired=2, eps=1e-8) -> torch
     mask = evals > (eps * float(evals.max()))
     r = int(mask.sum().item())
     k = max(1, min(k_desired, r))
-    U = evecs[:, -k:].contiguous()
-    return U
+    return evecs[:, -k:].contiguous()
+
+def estimate_agop_topk(model: nn.Module, loader: DataLoader, tap="pre_proj2",
+                       k=2, max_batches=5, device=DEVICE) -> torch.Tensor:
+    """
+    Estimate AGOP G_l ≈ sum_{b,c} (∂ sum f_c / ∂ h_l)ᵀ(∂ sum f_c / ∂ h_l) on a few batches.
+    Return top-k eigenvectors U (D x k) at the tap representation.
+    """
+    model.eval()
+    G = None
+    seen = 0
+    C = None
+    batches = 0
+    for b, (x, y, c, idx) in enumerate(loader):
+        if b >= max_batches: break
+        batches += 1
+        x = x.to(device)
+        with torch.no_grad():
+            logits, h = model.forward_with_tap(x, tap=tap)  # h: [B, D]
+        D = h.shape[1]
+        if C is None:
+            C = logits.shape[1]
+        h = h.detach()
+        h.requires_grad_(True)
+        logits_h = model.head_from_tap(h)                  # only head depends on h
+        G_batch = torch.zeros(D, D, device=device)
+        for cls in range(C):
+            s = logits_h[:, cls].sum()
+            g = torch.autograd.grad(s, h, retain_graph=True, create_graph=False)[0]  # [B, D]
+            G_batch += g.T @ g
+        if G is None:
+            G = G_batch.detach()
+        else:
+            G += G_batch.detach()
+        seen += x.size(0)
+
+    if G is None:
+        # fallback
+        W = model.classifier.weight.detach().to(device)
+        G = W.T @ W
+
+    G = G.float().detach().cpu()
+    evals, evecs = torch.linalg.eigh(G)
+    U = evecs[:, -k:].contiguous()  # [D, k]
+    return U.to(device)
 
 @torch.no_grad()
 def spectral_entropy(model: nn.Module) -> float:
@@ -231,76 +240,74 @@ def spectral_entropy(model: nn.Module) -> float:
     p = (evals / evals.sum()).cpu().numpy()
     return float(-(p * np.log(p)).sum())
 
+# -----------------------
+# Selection scores (Δ_U) & directions
+# -----------------------
 @torch.no_grad()
-def compute_align_scores(model: nn.Module, loader: DataLoader, U: torch.Tensor) -> Dict[int, float]:
-    """ s(i) = 1 - ||U^T z||^2 / ||z||^2 """
-    model.eval()
-    scores = {}
-    U = U.to(DEVICE)
-    for x, y, c, idx in loader:
-        x = x.to(DEVICE)
-        _, z = model(x, return_feat=True)
-        z = F.normalize(z, dim=1)
-        s = (1 - ((z @ U)**2).sum(dim=1)).clamp(min=0.0, max=1.0).detach().cpu().numpy()
-        for i, sid in enumerate(idx.tolist()):
-            scores[sid] = float(s[i])
-    return scores
-
-# NEW: counterfactual-pair sensitivity Δ_U
-@torch.no_grad()
-def compute_pair_sensitivity(model: nn.Module, loader: DataLoader, dataset: Dataset,
-                             U: torch.Tensor, probe_frac: float = 1.0) -> Dict[int, float]:
-    """
-    For each idx in (a probed subset of) loader, compute Δ_U(i) = ||U^T z - U^T z_flip||^2 / (||z||^2 + ||z_flip||^2)
-    Return dict idx -> Δ_U (higher means more spurious-sensitive).
-    """
-    model.eval()
-    U = U.to(DEVICE)
-    scores = {}
-    rng = np.random.RandomState(0)
+def compute_pair_sensitivity_old(model: nn.Module, loader: DataLoader, dataset: Dataset,
+                                 U: torch.Tensor, probe_frac: float = 1.0) -> Dict[int, float]:
+    """AGC-InvCFP-old: use final feature z and U from W^T W."""
+    model.eval(); U = U.to(DEVICE)
+    scores = {}; rng = np.random.RandomState(0)
     for x, y, c, idx in loader:
         idx_list = idx.tolist()
         if probe_frac < 1.0:
             take = rng.rand(len(idx_list)) < probe_frac
             idx_list = [idx_list[i] for i,b in enumerate(take) if b]
-            if len(idx_list) == 0:
-                continue
-            # reselect the tensors accordingly
+            if len(idx_list) == 0: continue
             mask = torch.tensor([i in set(idx_list) for i in idx.tolist()], dtype=torch.bool)
-            x = x[mask]; y = y[mask]; c = c[mask]; idx = idx[mask]
-
+            x = x[mask]; idx = idx[mask]
         x = x.to(DEVICE)
-        # build flip batch
         x_flip = torch.stack([dataset.get_flip_tensor(int(i)) for i in idx_list], dim=0).to(DEVICE)
 
-        _, z = model(x, return_feat=True)
+        _, z  = model(x, return_feat=True)
         _, zf = model(x_flip, return_feat=True)
-        z  = F.normalize(z, dim=1)
-        zf = F.normalize(zf, dim=1)
-        p  = z @ U
-        pf = zf @ U
-        num = ((p - pf)**2).sum(dim=1)           # energy change on U
+        z  = F.normalize(z, dim=1); zf = F.normalize(zf, dim=1)
+        p  = z @ U; pf = zf @ U
+        num = ((p - pf)**2).sum(dim=1)
         den = (z.pow(2).sum(dim=1) + zf.pow(2).sum(dim=1) + 1e-8)
         delta = (num / den).detach().cpu().numpy()
         for i, sid in enumerate(idx_list):
             scores[sid] = float(delta[i])
     return scores
 
-# FIX: device-safe direction alignment
+@torch.no_grad()
+def compute_pair_sensitivity_tap(model: nn.Module, loader: DataLoader, dataset: Dataset, U: torch.Tensor,
+                                 tap="pre_proj2", probe_frac: float = 1.0) -> Dict[int, float]:
+    """AGC-InvCFP-new: use tap representation h_l and AGOP-U."""
+    model.eval(); U = U.to(DEVICE)
+    scores = {}; rng = np.random.RandomState(0)
+    for x, y, c, idx in loader:
+        idx_list = idx.tolist()
+        if probe_frac < 1.0:
+            take = rng.rand(len(idx_list)) < probe_frac
+            idx_list = [idx_list[i] for i,b in enumerate(take) if b]
+            if len(idx_list) == 0: continue
+            mask = torch.tensor([i in set(idx_list) for i in idx.tolist()], dtype=torch.bool)
+            x = x[mask]; idx = idx[mask]
+        x = x.to(DEVICE)
+        x_flip = torch.stack([dataset.get_flip_tensor(int(i)) for i in idx_list], dim=0).to(DEVICE)
+
+        _, h  = model.forward_with_tap(x, tap=tap)
+        _, hf = model.forward_with_tap(x_flip, tap=tap)
+        h  = F.normalize(h, dim=1); hf = F.normalize(hf, dim=1)
+        p  = h @ U; pf = hf @ U
+        num = ((p - pf)**2).sum(dim=1)
+        den = (h.pow(2).sum(dim=1) + hf.pow(2).sum(dim=1) + 1e-8)
+        delta = (num / den).detach().cpu().numpy()
+        for i, sid in enumerate(idx_list):
+            scores[sid] = float(delta[i])
+    return scores
+
 @torch.no_grad()
 def direction_alignment(model: nn.Module, loader: DataLoader) -> Tuple[float,float]:
-    """
-    alpha: alignment to label direction; beta: alignment to color direction.
-    Compute on CPU to avoid device mismatch.
-    """
+    """alpha: alignment to label dir; beta: alignment to color dir (on W^T W top eigenvector)."""
     model.eval()
     Z, Ys, Cs = [], [], []
     for x, y, c, _ in loader:
         x = x.to(DEVICE)
         _, z = model(x, return_feat=True)
-        Z.append(z.detach().cpu())
-        Ys.append(y.detach().cpu())
-        Cs.append(c.detach().cpu())
+        Z.append(z.detach().cpu()); Ys.append(y.detach().cpu()); Cs.append(c.detach().cpu())
     Z = torch.cat(Z).to(torch.float32)
     Ys = torch.cat(Ys); Cs = torch.cat(Cs)
     if (Ys==0).sum()==0 or (Ys==1).sum()==0 or (Cs==0).sum()==0 or (Cs==1).sum()==0:
@@ -320,7 +327,7 @@ def direction_alignment(model: nn.Module, loader: DataLoader) -> Tuple[float,flo
     return alpha, beta
 
 # -----------------------
-# Train / Eval
+# Core train / eval
 # -----------------------
 def run_epoch(model, loader, optimizer, criterion, train=True):
     if train: model.train()
@@ -357,33 +364,155 @@ def eval_worst_group(model, loader):
     avg = sum(accs.values())/len(accs)
     return worst, avg, accs
 
-def train_erm(model, train_loader, test_loader, epochs=30, lr=3e-4, wd=1e-4):
+@torch.no_grad()
+def eval_group_counts(loader):
+    counts = {(y,c):0 for y in [0,1] for c in [0,1]}
+    for _, y, c, _ in loader:
+        for i in range(len(y)):
+            counts[(int(y[i]), int(c[i]))] += 1
+    return counts
+
+@torch.no_grad()
+def eval_flip_acc(model, test_set, batch_size=256):
+    base = test_set
+    while isinstance(base, Subset):
+        base = base.dataset
+    assert hasattr(base, "get_flip_tensor"), "flip eval only for Colored* datasets"
+    model.eval()
+    Xs, Ys = [], []
+    N = len(test_set)
+    for i in range(N):
+        idx = int(test_set.indices[i]) if isinstance(test_set, Subset) else i
+        x_flip = base.get_flip_tensor(idx)
+        _, y, _, _ = test_set[i]
+        Xs.append(x_flip); Ys.append(y)
+    X = torch.stack(Xs, dim=0); Y = torch.tensor(Ys, dtype=torch.long)
+    acc = 0.0; tot = 0
+    for s in range(0, len(X), batch_size):
+        xb = X[s:s+batch_size].to(DEVICE)
+        yb = Y[s:s+batch_size].to(DEVICE)
+        pred = model(xb).argmax(1)
+        acc += (pred==yb).sum().item()
+        tot += yb.numel()
+    return acc / max(1, tot)
+
+@torch.no_grad()
+def eval_perm_acc(model, test_loader, seed=0):
+    """Shuffle test labels; accuracy should be near chance (0.5) if无泄漏。"""
+    rng = np.random.RandomState(seed)
+    model.eval(); tot=0; corr=0
+    all_y = []
+    all_pred = []
+    for x, y, c, idx in test_loader:
+        x = x.to(DEVICE)
+        pred = model(x).argmax(1).cpu().numpy()
+        all_pred.append(pred); all_y.append(y.numpy())
+    all_pred = np.concatenate(all_pred)
+    all_y = np.concatenate(all_y)
+    perm = rng.permutation(len(all_y))
+    y_shuf = all_y[perm]
+    corr = (all_pred == y_shuf).sum()
+    tot  = len(all_y)
+    return corr / max(1, tot)
+
+@torch.no_grad()
+def eval_deltaU_mean_tap(model, test_loader, test_set, k=2, tap="pre_proj2",
+                         probe_frac=0.5, agop_eval_batches=2):
+    base = test_set
+    while isinstance(base, Subset):
+        base = base.dataset
+    U = estimate_agop_topk(model, test_loader, tap=tap, k=k, max_batches=agop_eval_batches)
+    d = compute_pair_sensitivity_tap(model, test_loader, base, U, tap=tap, probe_frac=probe_frac)
+    return float(np.mean(list(d.values()))) if len(d)>0 else float("nan")
+
+def check_train_test_overlap(train_set, test_set) -> int:
+    def unwrap_indices(ds):
+        if isinstance(ds, Subset):
+            base_idx = set(int(i) for i in ds.indices)
+            base = ds.dataset
+        else:
+            base = ds
+            base_idx = set(range(len(base)))
+        # try to unwrap nested subset
+        while isinstance(base, Subset):
+            base = base.dataset
+        return base_idx
+    tr_idx = unwrap_indices(train_set)
+    te_idx = unwrap_indices(test_set)
+    return len(tr_idx & te_idx)
+
+def color_only_baseline_acc(loader) -> float:
+    """Use c or 1-c to predict y on test set, take the better."""
+    ys, cs = [], []
+    for _, y, c, _ in loader:
+        ys.append(y.numpy()); cs.append(c.numpy())
+    y = np.concatenate(ys); c = np.concatenate(cs)
+    acc1 = (y == c).mean()
+    acc2 = (y == 1 - c).mean()
+    return max(acc1, acc2)
+
+# -----------------------
+# Training variants
+# -----------------------
+def train_erm(model, train_loader, test_loader, te_set,
+              epochs=30, lr=3e-4, wd=1e-4,
+              eval_flip_every=5, eval_delta_every=5, eval_perm_every=5,
+              delta_probe_frac=0.5, agop_eval_batches=2, perm_seed=0):
     model = model.to(DEVICE)
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
     crit = nn.CrossEntropyLoss()
     logs=[]
+    printed_groups=False
     for ep in range(1, epochs+1):
         tr_loss, tr_acc = run_epoch(model, train_loader, opt, crit, train=True)
         te_loss, te_acc = run_epoch(model, test_loader, None, crit, train=False)
         wg, _, _ = eval_worst_group(model, test_loader)
         H = spectral_entropy(model)
         a, b = direction_alignment(model, train_loader)
-        logs.append({"epoch": ep, "tr_acc": tr_acc, "te_acc": te_acc, "worst_group_acc": wg, "H": H, "alpha": a, "beta": b})
-        print(f"[ERM] ep{ep:02d} te_acc={te_acc:.3f} worstG={wg:.3f} H={H:.3f} alpha={a:.3f} beta={b:.3f}")
+
+        flip_acc = np.nan
+        deltaU_mean = np.nan
+        perm_acc = np.nan
+        if eval_flip_every>0 and ((ep % eval_flip_every)==1 or ep==epochs):
+            flip_acc = eval_flip_acc(model, te_set)
+        if eval_delta_every>0 and ((ep % eval_delta_every)==1 or ep==epochs):
+            deltaU_mean = eval_deltaU_mean_tap(model, test_loader, te_set,
+                                               k=2, tap="pre_proj2",
+                                               probe_frac=delta_probe_frac,
+                                               agop_eval_batches=agop_eval_batches)
+        if eval_perm_every>0 and ((ep % eval_perm_every)==1 or ep==epochs):
+            perm_acc = eval_perm_acc(model, test_loader, seed=perm_seed)
+
+        logs.append({"epoch": ep, "tr_acc": tr_acc, "te_acc": te_acc, "worst_group_acc": wg,
+                     "H": H, "alpha": a, "beta": b,
+                     "flip_acc": flip_acc, "deltaU_mean": deltaU_mean, "perm_acc": perm_acc})
+        if not printed_groups:
+            print("[test group counts]", eval_group_counts(test_loader)); printed_groups=True
+        msg = f"[ERM] ep{ep:02d} te_acc={te_acc:.3f} worstG={wg:.3f} H={H:.3f} alpha={a:.3f} beta={b:.3f}"
+        if not np.isnan(flip_acc):   msg += f" flip-acc={flip_acc:.3f}"
+        if not np.isnan(deltaU_mean):msg += f" ΔU={deltaU_mean:.4f}"
+        if not np.isnan(perm_acc):   msg += f" perm-acc={perm_acc:.3f}"
+        print(msg)
     return model, logs
 
-def train_jtt(train_set, test_loader, total_epochs=30, stage1_epochs=5, upsample=10, lr=3e-4):
+def train_jtt(train_set, test_loader, te_set,
+              total_epochs=30, stage1_epochs=5, upsample=10, lr=3e-4,
+              eval_flip_every=5, eval_delta_every=5, eval_perm_every=5,
+              delta_probe_frac=0.5, agop_eval_batches=2, perm_seed=0):
     base = CNNFeatSmall().to(DEVICE)
     opt = torch.optim.AdamW(base.parameters(), lr=lr)
     crit = nn.CrossEntropyLoss()
     base_loader = DataLoader(train_set, batch_size=256, shuffle=True, num_workers=2, pin_memory=True)
     logs=[]
+    printed_groups=False
     for ep in range(1, stage1_epochs+1):
         run_epoch(base, base_loader, opt, crit, train=True)
         te_loss, te_acc = run_epoch(base, test_loader, None, crit, train=False)
         wg, _, _ = eval_worst_group(base, test_loader)
         H = spectral_entropy(base); a,b = direction_alignment(base, base_loader)
         logs.append({"epoch": ep, "te_acc": te_acc, "worst_group_acc": wg, "H": H, "alpha": a, "beta": b})
+        if not printed_groups:
+            print("[test group counts]", eval_group_counts(test_loader)); printed_groups=True
         print(f"[JTT-Stage1] ep{ep:02d} te_acc={te_acc:.3f} worstG={wg:.3f}")
 
     base.eval()
@@ -408,8 +537,21 @@ def train_jtt(train_set, test_loader, total_epochs=30, stage1_epochs=5, upsample
         te_loss, te_acc = run_epoch(model, test_loader, None, crit, train=False)
         wg, _, _ = eval_worst_group(model, test_loader)
         H = spectral_entropy(model); a,b = direction_alignment(model, DataLoader(train_set, batch_size=256, shuffle=False))
-        logs.append({"epoch": ep, "tr_acc": tr_acc, "te_acc": te_acc, "worst_group_acc": wg, "H": H, "alpha": a, "beta": b})
-        print(f"[JTT] ep{ep:02d} te_acc={te_acc:.3f} worstG={wg:.3f} H={H:.3f}")
+        flip_acc   = eval_flip_acc(model, te_set) if (eval_flip_every>0 and ((ep % eval_flip_every)==1 or ep==total_epochs)) else np.nan
+        deltaU_mean= eval_deltaU_mean_tap(model, test_loader, te_set, k=2, tap="pre_proj2",
+                                          probe_frac=delta_probe_frac, agop_eval_batches=agop_eval_batches) \
+                     if (eval_delta_every>0 and ((ep % eval_delta_every)==1 or ep==total_epochs)) else np.nan
+        perm_acc   = eval_perm_acc(model, test_loader, seed=perm_seed) \
+                     if (eval_perm_every>0 and ((ep % eval_perm_every)==1 or ep==total_epochs)) else np.nan
+
+        logs.append({"epoch": ep, "tr_acc": tr_acc, "te_acc": te_acc, "worst_group_acc": wg,
+                     "H": H, "alpha": a, "beta": b,
+                     "flip_acc": flip_acc, "deltaU_mean": deltaU_mean, "perm_acc": perm_acc})
+        msg = f"[JTT] ep{ep:02d} te_acc={te_acc:.3f} worstG={wg:.3f} H={H:.3f}"
+        if not np.isnan(flip_acc):   msg += f" flip-acc={flip_acc:.3f}"
+        if not np.isnan(deltaU_mean):msg += f" ΔU={deltaU_mean:.4f}"
+        if not np.isnan(perm_acc):   msg += f" perm-acc={perm_acc:.3f}"
+        print(msg)
     return model, logs
 
 def _unwrap_colored_dataset(ds: Dataset) -> ColoredBinaryBase:
@@ -419,42 +561,28 @@ def _unwrap_colored_dataset(ds: Dataset) -> ColoredBinaryBase:
     assert isinstance(base, ColoredBinaryBase), "This method needs Colored* dataset."
     return base
 
-# NEW: AGC-InvCFP training
-def train_agc_invcfp(train_set, test_loader, total_epochs=30, lr=3e-4,
-                     keep_start=0.3, keep_end=0.9, k_desired=2,
-                     probe_frac=0.6, lambda_cons=0.2):
-    """
-    Counterfactual-pair curriculum:
-      - score by Δ_U = ||U^T z - U^T z_flip||^2 / (||z||^2 + ||z_flip||^2)
-      - select top keep_ratio to form a subset each epoch
-      - train with CE on (x) and (x_flip) + consistency loss on features
-    """
+# AGC-InvCFP-old
+def train_agc_invcfp_old(train_set, test_loader, te_set,
+                         total_epochs=30, lr=3e-4,
+                         keep_start=0.3, keep_end=0.9, k_desired=2,
+                         probe_frac=0.6, lambda_cons=0.2,
+                         eval_flip_every=5, eval_delta_every=5, eval_perm_every=5,
+                         delta_probe_frac=0.5, agop_eval_batches=2, perm_seed=0):
     dataset_base = _unwrap_colored_dataset(train_set)
     model = CNNFeatSmall().to(DEVICE)
     opt = torch.optim.AdamW(model.parameters(), lr=lr)
     crit = nn.CrossEntropyLoss()
     base_loader = DataLoader(train_set, batch_size=256, shuffle=False, num_workers=2, pin_memory=True)
 
-    # labels dict for mild class-balance
-    labels = {}
-    for _, y, _, idx in base_loader:
-        for i, sid in enumerate(idx.tolist()):
-            labels[sid] = int(y[i])
-
-    logs=[]
+    logs=[]; printed_groups=False
     for ep in range(1, total_epochs+1):
         keep_ratio = min(keep_end, keep_start + (keep_end - keep_start) * (ep-1)/(total_epochs-1))
+        U = topk_basis_from_classifier(model, k_desired=k_desired)  # last-layer W^T W
 
-        # AGOP subspace
-        U = topk_basis_from_classifier(model, k_desired=k_desired)
-
-        # Δ_U sensitivity
-        delta = compute_pair_sensitivity(model, base_loader, dataset_base, U, probe_frac=probe_frac)
+        delta = compute_pair_sensitivity_old(model, base_loader, dataset_base, U, probe_frac=probe_frac)
         n = len(delta); m = max(1, int(n * keep_ratio))
-        # select top-m by Δ_U
         top_idx = [i for i,_ in sorted(delta.items(), key=lambda kv: kv[1], reverse=True)[:m]]
 
-        # mix in small random for stability
         remain = list(set(delta.keys()) - set(top_idx))
         if len(remain) > 0:
             top_idx += random.sample(remain, min(int(0.1*n), len(remain)))
@@ -462,72 +590,125 @@ def train_agc_invcfp(train_set, test_loader, total_epochs=30, lr=3e-4,
         subset = subset_from_base_indices(train_set, top_idx)
         train_loader = DataLoader(subset, batch_size=256, shuffle=True, num_workers=2, pin_memory=True)
 
-        # one epoch with pair-consistency
+        # one epoch with full-feature consistency (old)
         model.train()
-        total, correct, total_loss = 0, 0, 0.0
+        total, correct = 0, 0
         for x, y, c, idx in train_loader:
             x, y = x.to(DEVICE), y.to(DEVICE)
             x_flip = torch.stack([dataset_base.get_flip_tensor(int(i)) for i in idx.tolist()], dim=0).to(DEVICE)
-
             logits, z   = model(x, return_feat=True)
-            logits_f, zf = model(x_flip, return_feat=True)
-
+            logits_f, zf= model(x_flip, return_feat=True)
             ce = crit(logits, y) + crit(logits_f, y)
-            cons = F.mse_loss(z, zf)
+            cons = F.mse_loss(z, zf)  # full
             loss = ce + lambda_cons * cons
-
-            opt.zero_grad(set_to_none=True)
-            loss.backward()
-            opt.step()
-
+            opt.zero_grad(set_to_none=True); loss.backward(); opt.step()
             pred = logits.argmax(1)
-            total += y.size(0)
-            correct += (pred==y).sum().item()
-            total_loss += float(loss.item()) * y.size(0)
+            total += y.size(0); correct += (pred==y).sum().item()
 
-        # eval
         te_loss, te_acc = run_epoch(model, test_loader, None, crit, train=False)
         wg, _, _ = eval_worst_group(model, test_loader)
-        H = spectral_entropy(model)
-        a, b = direction_alignment(model, base_loader)
+        H = spectral_entropy(model); a, b = direction_alignment(model, base_loader)
+
+        flip_acc   = eval_flip_acc(model, te_set) if (eval_flip_every>0 and ((ep % eval_flip_every)==1 or ep==total_epochs)) else np.nan
+        deltaU_mean= eval_deltaU_mean_tap(model, test_loader, te_set, k=2, tap="pre_proj2",
+                                          probe_frac=delta_probe_frac, agop_eval_batches=agop_eval_batches) \
+                     if (eval_delta_every>0 and ((ep % eval_delta_every)==1 or ep==total_epochs)) else np.nan
+        perm_acc   = eval_perm_acc(model, test_loader, seed=perm_seed) \
+                     if (eval_perm_every>0 and ((ep % eval_perm_every)==1 or ep==total_epochs)) else np.nan
+
         logs.append({"epoch": ep, "keep_ratio": keep_ratio,
                      "tr_acc": correct/total if total>0 else 0.0,
-                     "te_acc": te_acc, "worst_group_acc": wg, "H": H, "alpha": a, "beta": b})
-        print(f"[AGC_INV-CFP] ep{ep:02d} keep={keep_ratio:.2f} te_acc={te_acc:.3f} worstG={wg:.3f} H={H:.3f} alpha={a:.3f} beta={b:.3f}")
-
+                     "te_acc": te_acc, "worst_group_acc": wg, "H": H, "alpha": a, "beta": b,
+                     "flip_acc": flip_acc, "deltaU_mean": deltaU_mean, "perm_acc": perm_acc})
+        if not printed_groups:
+            print("[test group counts]", eval_group_counts(test_loader)); printed_groups=True
+        msg = f"[AGC_INV-CFP_OLD] ep{ep:02d} keep={keep_ratio:.2f} te_acc={te_acc:.3f} worstG={wg:.3f} H={H:.3f}"
+        if not np.isnan(flip_acc):   msg += f" flip-acc={flip_acc:.3f}"
+        if not np.isnan(deltaU_mean):msg += f" ΔU={deltaU_mean:.4f}"
+        if not np.isnan(perm_acc):   msg += f" perm-acc={perm_acc:.3f}"
+        print(msg)
     return model, logs
 
-def train_agc(train_set, test_loader, variant="agc_despur",
-              total_epochs=30, lr=3e-4, keep_start=0.3, keep_end=0.9, k_desired=2):
-    assert variant in {"agc_despur","agc_easy"}
+# AGC-InvCFP-new (AGOP @ tap + projection consistency)
+def train_agc_invcfp_new(train_set, test_loader, te_set,
+                         total_epochs=30, lr=3e-4,
+                         keep_start=0.3, keep_end=0.9, k_desired=2,
+                         probe_frac=0.6, lambda_cons=0.2,
+                         agop_update_every=1, agop_train_batches=3,
+                         eval_flip_every=5, eval_delta_every=5, eval_perm_every=5,
+                         delta_probe_frac=0.5, agop_eval_batches=2, perm_seed=0,
+                         tap="pre_proj2"):
+    dataset_base = _unwrap_colored_dataset(train_set)
     model = CNNFeatSmall().to(DEVICE)
     opt = torch.optim.AdamW(model.parameters(), lr=lr)
     crit = nn.CrossEntropyLoss()
     base_loader = DataLoader(train_set, batch_size=256, shuffle=False, num_workers=2, pin_memory=True)
 
-    labels = {}
-    for _, y, _, idx in base_loader:
-        for i, sid in enumerate(idx.tolist()):
-            labels[sid] = int(y[i])
-
-    logs=[]
+    logs=[]; printed_groups=False
+    U = estimate_agop_topk(model, base_loader, tap=tap, k=k_desired, max_batches=agop_train_batches)
     for ep in range(1, total_epochs+1):
         keep_ratio = min(keep_end, keep_start + (keep_end - keep_start) * (ep-1)/(total_epochs-1))
-        U = topk_basis_from_classifier(model, k_desired=k_desired)
-        scores = compute_align_scores(model, base_loader, U)
-        selected = select_indices_by_curriculum(scores, labels, keep_ratio, variant=variant, min_random_frac=0.1)
+        if (ep==1) or (agop_update_every>0 and ep % agop_update_every == 0):
+            U = estimate_agop_topk(model, base_loader, tap=tap, k=k_desired, max_batches=agop_train_batches)
 
-        subset = subset_from_base_indices(train_set, selected)
+        delta = compute_pair_sensitivity_tap(model, base_loader, dataset_base, U, tap=tap, probe_frac=probe_frac)
+        n = len(delta); m = max(1, int(n * keep_ratio))
+        top_idx = [i for i,_ in sorted(delta.items(), key=lambda kv: kv[1], reverse=True)[:m]]
+
+        remain = list(set(delta.keys()) - set(top_idx))
+        if len(remain) > 0:
+            top_idx += random.sample(remain, min(int(0.1*n), len(remain)))
+
+        subset = subset_from_base_indices(train_set, top_idx)
         train_loader = DataLoader(subset, batch_size=256, shuffle=True, num_workers=2, pin_memory=True)
-        tr_loss, tr_acc = run_epoch(model, train_loader, opt, crit, train=True)
+
+        # one epoch with projection consistency on AGOP subspace
+        model.train()
+        total, correct = 0, 0
+        for x, y, c, idx in train_loader:
+            x, y = x.to(DEVICE), y.to(DEVICE)
+            x_flip = torch.stack([dataset_base.get_flip_tensor(int(i)) for i in idx.tolist()], dim=0).to(DEVICE)
+
+            logits = model(x)
+            logits_f = model(x_flip)
+
+            # projection consistency on tap
+            _, h  = model.forward_with_tap(x, tap=tap)
+            _, hf = model.forward_with_tap(x_flip, tap=tap)
+            proj  = h  @ U
+            projf = hf @ U
+
+            ce = crit(logits, y) + crit(logits_f, y)
+            cons = F.mse_loss(proj, projf)
+            loss = ce + lambda_cons * cons
+
+            opt.zero_grad(set_to_none=True); loss.backward(); opt.step()
+
+            pred = logits.argmax(1)
+            total += y.size(0); correct += (pred==y).sum().item()
 
         te_loss, te_acc = run_epoch(model, test_loader, None, crit, train=False)
         wg, _, _ = eval_worst_group(model, test_loader)
-        H = spectral_entropy(model)
-        a,b = direction_alignment(model, base_loader)
-        logs.append({"epoch": ep, "keep_ratio": keep_ratio, "tr_acc": tr_acc,
-                     "te_acc": te_acc, "worst_group_acc": wg, "H": H, "alpha": a, "beta": b})
-        print(f"[{variant.upper()}] ep{ep:02d} keep={keep_ratio:.2f} te_acc={te_acc:.3f} worstG={wg:.3f} H={H:.3f}")
+        H = spectral_entropy(model); a, b = direction_alignment(model, base_loader)
+
+        flip_acc   = eval_flip_acc(model, te_set) if (eval_flip_every>0 and ((ep % eval_flip_every)==1 or ep==total_epochs)) else np.nan
+        deltaU_mean= eval_deltaU_mean_tap(model, test_loader, te_set, k=k_desired, tap=tap,
+                                          probe_frac=delta_probe_frac, agop_eval_batches=agop_eval_batches) \
+                     if (eval_delta_every>0 and ((ep % eval_delta_every)==1 or ep==total_epochs)) else np.nan
+        perm_acc   = eval_perm_acc(model, test_loader, seed=perm_seed) \
+                     if (eval_perm_every>0 and ((ep % eval_perm_every)==1 or ep==total_epochs)) else np.nan
+
+        logs.append({"epoch": ep, "keep_ratio": keep_ratio,
+                     "tr_acc": correct/total if total>0 else 0.0,
+                     "te_acc": te_acc, "worst_group_acc": wg, "H": H, "alpha": a, "beta": b,
+                     "flip_acc": flip_acc, "deltaU_mean": deltaU_mean, "perm_acc": perm_acc})
+        if not printed_groups:
+            print("[test group counts]", eval_group_counts(test_loader)); printed_groups=True
+        msg = f"[AGC_INV-CFP_NEW] ep{ep:02d} keep={keep_ratio:.2f} te_acc={te_acc:.3f} worstG={wg:.3f} H={H:.3f}"
+        if not np.isnan(flip_acc):   msg += f" flip-acc={flip_acc:.3f}"
+        if not np.isnan(deltaU_mean):msg += f" ΔU={deltaU_mean:.4f}"
+        if not np.isnan(perm_acc):   msg += f" perm-acc={perm_acc:.3f}"
+        print(msg)
     return model, logs
 
 # -----------------------
@@ -543,6 +724,10 @@ def build_task(task: str, root="./data", seed=0, p_train=0.99, p_test=0.1,
     elif task=="colored_fmnist":
         tr = ColoredFashionMNIST(root, "train", p_train=p_train, p_test=p_test, seed=seed, download=download)
         te = ColoredFashionMNIST(root, "test",  p_train=p_train, p_test=p_test, seed=seed+1, download=download)
+        batch = 256
+    elif task=="colored_kmnist":
+        tr = ColoredKMNIST(root, "train", p_train=p_train, p_test=p_test, seed=seed, download=download)
+        te = ColoredKMNIST(root, "test",  p_train=p_train, p_test=p_test, seed=seed+1, download=download)
         batch = 256
     elif task=="colored_cifar10":
         tr = ColoredCIFAR10(root, "train", p_train=max(p_train, 0.995), p_test=p_test, seed=seed, download=download)
@@ -589,6 +774,7 @@ def plot_metric_curves(agg: Dict[str, Dict[str, Tuple[np.ndarray,np.ndarray,np.n
                        metric_name: str, out_png: str, title: str):
     plt.figure(figsize=(7,5))
     for method, d in agg.items():
+        if metric_name not in d: continue
         ep, mu, lo, hi = d[metric_name]
         plt.plot(ep, mu, label=method)
         plt.fill_between(ep, lo, hi, alpha=0.2)
@@ -620,19 +806,34 @@ def plot_bars_best(results_by_method_seeds: Dict[str, List[List[Dict]]],
 # -----------------------
 def run_all(task: str, seeds: List[int], outdir: str,
             epochs=30, p_train=0.99, p_test=0.1, train_fraction=1.0,
-            lr=3e-4, upsample=10):
+            lr=3e-4, upsample=10,
+            eval_flip_every=5, eval_delta_every=5, eval_perm_every=5,
+            delta_probe_frac=0.5, agop_eval_batches=2, perm_seed=0,
+            agop_update_every=1, agop_train_batches=3):
     ensure_dir(outdir)
+    # Build once (for overlap & color-only stats)
+    tr_set0, te_set0, tr_loader0, te_loader0 = build_task(task, seed=seeds[0], p_train=p_train, p_test=p_test,
+                                                          train_fraction=train_fraction)
+    overlap = check_train_test_overlap(tr_set0, te_set0)
+    color_acc = color_only_baseline_acc(te_loader0)
+    print(f"[sanity] train/test index overlap = {overlap} (should be 0)")
+    print(f"[sanity] color-only baseline acc on test = {color_acc:.3f}")
+
     cfg = dict(task=task, seeds=seeds, epochs=epochs, p_train=p_train, p_test=p_test,
-               train_fraction=train_fraction, lr=lr, upsample=upsample)
+               train_fraction=train_fraction, lr=lr, upsample=upsample,
+               eval_flip_every=eval_flip_every, eval_delta_every=eval_delta_every,
+               eval_perm_every=eval_perm_every, delta_probe_frac=delta_probe_frac,
+               agop_eval_batches=agop_eval_batches, perm_seed=perm_seed,
+               agop_update_every=agop_update_every, agop_train_batches=agop_train_batches,
+               color_only_acc=color_acc, train_test_overlap=overlap)
     with open(os.path.join(outdir, "config.json"), "w") as f:
         json.dump(cfg, f, indent=2)
 
     results_by_method = {
         "ERM": [],
         "JTT": [],
-        "AGC-Despur": [],
-        "AGC-Easy": [],
-        "AGC-InvCFP": []  # NEW
+        "AGC-InvCFP-old": [],
+        "AGC-InvCFP-new": []
     }
 
     for s in seeds:
@@ -642,44 +843,73 @@ def run_all(task: str, seeds: List[int], outdir: str,
 
         # ERM
         model = CNNFeatSmall()
-        erm_model, erm_logs = train_erm(model, tr_loader, te_loader, epochs=epochs, lr=lr)
+        erm_model, erm_logs = train_erm(model, tr_loader, te_loader, te_set,
+                                        epochs=epochs, lr=lr,
+                                        eval_flip_every=eval_flip_every,
+                                        eval_delta_every=eval_delta_every,
+                                        eval_perm_every=eval_perm_every,
+                                        delta_probe_frac=delta_probe_frac,
+                                        agop_eval_batches=agop_eval_batches,
+                                        perm_seed=perm_seed)
         write_csv(os.path.join(outdir, f"ERM_seed{s}.csv"), erm_logs)
         results_by_method["ERM"].append(erm_logs)
 
         # JTT
-        jtt_model, jtt_logs = train_jtt(tr_set, te_loader, total_epochs=epochs, stage1_epochs=max(1,epochs//6),
-                                        upsample=upsample, lr=lr)
+        jtt_model, jtt_logs = train_jtt(tr_set, te_loader, te_set,
+                                        total_epochs=epochs, stage1_epochs=max(1,epochs//6),
+                                        upsample=upsample, lr=lr,
+                                        eval_flip_every=eval_flip_every,
+                                        eval_delta_every=eval_delta_every,
+                                        eval_perm_every=eval_perm_every,
+                                        delta_probe_frac=delta_probe_frac,
+                                        agop_eval_batches=agop_eval_batches,
+                                        perm_seed=perm_seed)
         write_csv(os.path.join(outdir, f"JTT_seed{s}.csv"), jtt_logs)
         results_by_method["JTT"].append(jtt_logs)
 
-        # AGC-Despur
-        agc_d_model, agc_d_logs = train_agc(tr_set, te_loader, variant="agc_despur", total_epochs=epochs, lr=lr,
-                                            keep_start=0.3, keep_end=0.9, k_desired=2)
-        write_csv(os.path.join(outdir, f"AGC_Despur_seed{s}.csv"), agc_d_logs)
-        results_by_method["AGC-Despur"].append(agc_d_logs)
+        # AGC-InvCFP-old
+        agc_old_model, agc_old_logs = train_agc_invcfp_old(tr_set, te_loader, te_set,
+                                                           total_epochs=epochs, lr=lr,
+                                                           keep_start=0.3, keep_end=0.9, k_desired=2,
+                                                           probe_frac=0.6, lambda_cons=0.2,
+                                                           eval_flip_every=eval_flip_every,
+                                                           eval_delta_every=eval_delta_every,
+                                                           eval_perm_every=eval_perm_every,
+                                                           delta_probe_frac=delta_probe_frac,
+                                                           agop_eval_batches=agop_eval_batches,
+                                                           perm_seed=perm_seed)
+        write_csv(os.path.join(outdir, f"AGC_InvCFP_old_seed{s}.csv"), agc_old_logs)
+        results_by_method["AGC-InvCFP-old"].append(agc_old_logs)
 
-        # AGC-Easy
-        agc_e_model, agc_e_logs = train_agc(tr_set, te_loader, variant="agc_easy", total_epochs=epochs, lr=lr,
-                                            keep_start=0.3, keep_end=0.9, k_desired=2)
-        write_csv(os.path.join(outdir, f"AGC_Easy_seed{s}.csv"), agc_e_logs)
-        results_by_method["AGC-Easy"].append(agc_e_logs)
-
-        # NEW: AGC-InvCFP
-        agc_inv_model, agc_inv_logs = train_agc_invcfp(tr_set, te_loader, total_epochs=epochs, lr=lr,
-                                                       keep_start=0.3, keep_end=0.9, k_desired=2,
-                                                       probe_frac=0.6, lambda_cons=0.2)
-        write_csv(os.path.join(outdir, f"AGC_InvCFP_seed{s}.csv"), agc_inv_logs)
-        results_by_method["AGC-InvCFP"].append(agc_inv_logs)
+        # AGC-InvCFP-new
+        agc_new_model, agc_new_logs = train_agc_invcfp_new(tr_set, te_loader, te_set,
+                                                           total_epochs=epochs, lr=lr,
+                                                           keep_start=0.3, keep_end=0.9, k_desired=2,
+                                                           probe_frac=0.6, lambda_cons=0.2,
+                                                           agop_update_every=agop_update_every,
+                                                           agop_train_batches=agop_train_batches,
+                                                           eval_flip_every=eval_flip_every,
+                                                           eval_delta_every=eval_delta_every,
+                                                           eval_perm_every=eval_perm_every,
+                                                           delta_probe_frac=delta_probe_frac,
+                                                           agop_eval_batches=agop_eval_batches,
+                                                           perm_seed=perm_seed,
+                                                           tap="pre_proj2")
+        write_csv(os.path.join(outdir, f"AGC_InvCFP_new_seed{s}.csv"), agc_new_logs)
+        results_by_method["AGC-InvCFP-new"].append(agc_new_logs)
 
     # Aggregation & plots
     agg = {}
     for method, seed_logs in results_by_method.items():
         agg[method] = {
-            "te_acc": aggregate_across_seeds(seed_logs, metric="te_acc"),
+            "te_acc":       aggregate_across_seeds(seed_logs, metric="te_acc"),
             "worst_group_acc": aggregate_across_seeds(seed_logs, metric="worst_group_acc"),
-            "H": aggregate_across_seeds(seed_logs, metric="H"),
-            "alpha": aggregate_across_seeds(seed_logs, metric="alpha"),
-            "beta": aggregate_across_seeds(seed_logs, metric="beta"),
+            "H":            aggregate_across_seeds(seed_logs, metric="H"),
+            "alpha":        aggregate_across_seeds(seed_logs, metric="alpha"),
+            "beta":         aggregate_across_seeds(seed_logs, metric="beta"),
+            "flip_acc":     aggregate_across_seeds(seed_logs, metric="flip_acc"),
+            "deltaU_mean":  aggregate_across_seeds(seed_logs, metric="deltaU_mean"),
+            "perm_acc":     aggregate_across_seeds(seed_logs, metric="perm_acc"),
         }
 
     plot_metric_curves(agg, "te_acc", os.path.join(outdir, "curve_te_acc.png"),
@@ -692,6 +922,12 @@ def run_all(task: str, seeds: List[int], outdir: str,
                        f"{task}: Alignment to Label dir (alpha)")
     plot_metric_curves(agg, "beta", os.path.join(outdir, "curve_beta.png"),
                        f"{task}: Alignment to Color dir (beta)")
+    plot_metric_curves(agg, "flip_acc", os.path.join(outdir, "curve_flip_acc.png"),
+                       f"{task}: Flip-Acc (mean±95% CI)")
+    plot_metric_curves(agg, "deltaU_mean", os.path.join(outdir, "curve_deltaU_mean.png"),
+                       f"{task}: Δ_U mean on test (lower is better)")
+    plot_metric_curves(agg, "perm_acc", os.path.join(outdir, "curve_perm_acc.png"),
+                       f"{task}: Permuted-label Acc (should be ~0.5)")
 
     plot_bars_best(results_by_method, "te_acc", os.path.join(outdir, "best_te_acc.png"),
                    f"{task}: Best Test Acc across seeds")
@@ -701,11 +937,11 @@ def run_all(task: str, seeds: List[int], outdir: str,
     print(f"[DONE] Results saved under: {outdir}")
 
 # -----------------------
-# Main (CLI)
+# CLI
 # -----------------------
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--tasks", nargs="+", default=["colored_mnist", "colored_fmnist", "colored_cifar10"],
+    parser.add_argument("--tasks", nargs="+", default=["colored_mnist", "colored_fmnist", "colored_kmnist", "colored_cifar10"],
                         help="Which tasks to run")
     parser.add_argument("--seeds", type=int, default=3, help="Number of random seeds")
     parser.add_argument("--epochs", type=int, default=30, help="Epochs per method")
@@ -714,6 +950,17 @@ def main():
     parser.add_argument("--train-fraction", type=float, default=1.0, help="Subsample fraction of training set")
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--upsample", type=int, default=10, help="JTT upweight factor")
+
+    parser.add_argument("--eval-flip-every", type=int, default=5, help="Eval flip-acc every K epochs (1 = every epoch, 0 = never)")
+    parser.add_argument("--eval-delta-every", type=int, default=5, help="Eval Δ_U mean every K epochs (1 = every epoch, 0 = never)")
+    parser.add_argument("--eval-perm-every", type=int, default=5, help="Eval permuted-label acc every K epochs (1 = every epoch, 0 = never)")
+    parser.add_argument("--delta-probe-frac", type=float, default=0.5, help="Fraction for Δ_U test probing (0<frac<=1)")
+    parser.add_argument("--agop-eval-batches", type=int, default=2, help="Batches used to estimate AGOP at eval")
+    parser.add_argument("--perm-seed", type=int, default=0)
+
+    parser.add_argument("--agop-update-every", type=int, default=1, help="Update AGOP U every K epochs in AGC-new")
+    parser.add_argument("--agop-train-batches", type=int, default=3, help="Batches to estimate AGOP at train (AGC-new)")
+
     parser.add_argument("--out-root", type=str, default="experiments/curriculum")
     args = parser.parse_args()
 
@@ -725,7 +972,12 @@ def main():
         print(f"\n=== Task: {task} | seeds={seeds} | epochs={args.epochs} ===")
         run_all(task=task, seeds=seeds, outdir=outdir,
                 epochs=args.epochs, p_train=args.p_train, p_test=args.p_test,
-                train_fraction=args.train_fraction, lr=args.lr, upsample=args.upsample)
+                train_fraction=args.train_fraction, lr=args.lr, upsample=args.upsample,
+                eval_flip_every=args.eval_flip_every, eval_delta_every=args.eval_delta_every,
+                eval_perm_every=args.eval_perm_every,
+                delta_probe_frac=args.delta_probe_frac, agop_eval_batches=args.agop_eval_batches,
+                perm_seed=args.perm_seed,
+                agop_update_every=args.agop_update_every, agop_train_batches=args.agop_train_batches)
 
 if __name__ == "__main__":
     main()
