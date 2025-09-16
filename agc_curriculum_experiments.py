@@ -198,31 +198,37 @@ def agop_spectral_entropy(G: torch.Tensor) -> float:
     p = (evals / evals.sum()).cpu().numpy()
     return float(-(p * np.log(p)).sum())
 
-@torch.no_grad()
 def estimate_agop_topk(model: nn.Module, loader: DataLoader, k: int = 2, max_batches: int = 4) -> torch.Tensor:
     """
     Estimate top-k AGOP basis U on a small number of batches from 'loader' at the feature tap.
     Returns U: [D, k] (on CPU).
+    NOTE: needs gradients; do NOT wrap with torch.no_grad().
     """
     model.eval()
     G_sum = None
     n = 0
     it = 0
-    for x, y, c, idx in loader:
-        it += 1
-        if it > max_batches: break
-        x, y = x.to(DEVICE), y.to(DEVICE)
-        x.requires_grad_(False)
-        logits, z = model(x, return_feat=True)  # z will be part of graph
-        G = _agop_grad_cov_from_batch(z, logits, y)
-        G = G.detach().cpu()
-        G_sum = G if G_sum is None else (G_sum + G)
-        n += 1
-    if G_sum is None:  # fallback
-        dummy = torch.eye(model.classifier.in_features, dtype=torch.float32)
-        return dummy[:, :max(1,k)].contiguous()
-    G_mean = G_sum / max(n,1)
+    # 必须显式启用梯度（即使在 eval 模式也可反传到 z）
+    with torch.enable_grad():
+        for x, y, c, idx in loader:
+            it += 1
+            if it > max_batches:
+                break
+            x, y = x.to(DEVICE), y.to(DEVICE)
+            # 前向图需要保留，以便对 z 求导
+            logits, z = model(x, return_feat=True)
+            G = _agop_grad_cov_from_batch(z, logits, y)  # uses autograd.grad
+            G = G.detach().cpu()
+            G_sum = G if G_sum is None else (G_sum + G)
+            n += 1
+    if G_sum is None:
+        # 兜底：用单位基
+        D = model.classifier.in_features
+        dummy = torch.eye(D, dtype=torch.float32)
+        return dummy[:, :max(1, k)].contiguous()
+    G_mean = G_sum / max(n, 1)
     return _U_from_G(G_mean, k)
+
 
 # -----------------------
 # NFA proxy via classifier (kept for OLD variant)
@@ -357,41 +363,44 @@ def eval_flip_acc_and_SUS(model, loader, dataset) -> Tuple[float, float]:
     sus = flip_acc - te_acc
     return flip_acc, sus
 
-@torch.no_grad()
-def eval_agop_subspace_gap_and_entropy(model, loader, k:int=2, max_batches:int=3) -> Tuple[float, float]:
+def eval_agop_subspace_gap_and_entropy(model, loader, k: int = 2, max_batches: int = 3) -> Tuple[float, float]:
     """
     On a few batches of 'loader':
       - build two weak views per batch, compute AGOP G1/G2 at feature tap
       - subspace_gap = mean ||P1-P2||_F^2
       - H_AGOP = spectral entropy of average G
+    NOTE: needs gradients wrt features; do NOT use torch.no_grad() here.
     """
     model.eval()
     gap_sum = 0.0; count = 0
     G_sum = None; nG = 0
     it = 0
-    for x, y, c, idx in loader:
-        it += 1
-        if it > max_batches: break
-        x, y = x.to(DEVICE), y.to(DEVICE)
-        x1 = weak_augment(x, 0.05)
-        x2 = weak_augment(x, 0.05)
-        # view1
-        logits1, z1 = model(x1, return_feat=True)
-        G1 = _agop_grad_cov_from_batch(z1, logits1, y)
-        # view2
-        logits2, z2 = model(x2, return_feat=True)
-        G2 = _agop_grad_cov_from_batch(z2, logits2, y)
-        # projectors
-        P1 = _topk_projector_from_G(G1, k).cpu()
-        P2 = _topk_projector_from_G(G2, k).cpu()
-        gap = torch.norm(P1 - P2, p='fro').item()**2
-        gap_sum += gap; count += 1
-        # entropy on average G
-        Gm = ((G1 + G2)/2).detach().cpu()
-        G_sum = Gm if G_sum is None else (G_sum + Gm); nG += 1
-    gap_avg = gap_sum/max(count,1)
-    H_agop = agop_spectral_entropy(G_sum/max(nG,1)) if G_sum is not None else float('nan')
+    with torch.enable_grad():
+        for x, y, c, idx in loader:
+            it += 1
+            if it > max_batches:
+                break
+            x, y = x.to(DEVICE), y.to(DEVICE)
+            x1 = weak_augment(x, 0.05)
+            x2 = weak_augment(x, 0.05)
+            # view1
+            logits1, z1 = model(x1, return_feat=True)
+            G1 = _agop_grad_cov_from_batch(z1, logits1, y)
+            # view2
+            logits2, z2 = model(x2, return_feat=True)
+            G2 = _agop_grad_cov_from_batch(z2, logits2, y)
+            # projectors
+            P1 = _topk_projector_from_G(G1, k).cpu()
+            P2 = _topk_projector_from_G(G2, k).cpu()
+            gap = torch.norm(P1 - P2, p='fro').item()**2
+            gap_sum += gap; count += 1
+            # entropy on average G
+            Gm = ((G1 + G2)/2).detach().cpu()
+            G_sum = Gm if G_sum is None else (G_sum + Gm); nG += 1
+    gap_avg = gap_sum / max(count, 1)
+    H_agop = agop_spectral_entropy(G_sum / max(nG, 1)) if G_sum is not None else float('nan')
     return gap_avg, H_agop
+
 
 # -----------------------
 # Train / Eval generic epoch
@@ -675,8 +684,10 @@ def train_erm(model, train_loader, test_loader, te_set,
         logs.append({"epoch": ep, "tr_acc": tr_acc, "te_acc": te_acc,
                      "worst_group_acc": wg, "worstG_at_Nmin": wgN,
                      "subspace_gap": gap, "H_AGOP": H_agop, "SUS": sus})
-        print(f"[ERM] ep{ep:02d} te_acc={te_acc:.3f} worstG={wg:.3f} worstG@{nmin}={wgN:.3f if not np.isnan(wgN) else float('nan'):.3f} "
-              f"gap={gap:.3f} H_AGOP={H_agop:.3f} SUS={sus:.3f}")
+        wgN_str = f"{wgN:.3f}" if (wgN==wgN) else "nan"  # NaN-safe
+        print(f"[ERM] ep{ep:02d} te_acc={te_acc:.3f} worstG={wg:.3f} worstG@{nmin}={wgN_str} "
+                f"gap={gap:.3f} H_AGOP={H_agop:.3f} SUS={sus:.3f}")
+
     return model, logs
 
 def train_jtt(train_set, test_loader, total_epochs=30, stage1_epochs=5, upsample=10,
@@ -760,16 +771,27 @@ def build_task(task: str, root="./data", seed=0,
 
 @torch.no_grad()
 def sanity_prints(train_set, test_set):
-    # index overlap check (subset-safe)
-    tr_idx = []
-    if isinstance(train_set, Subset): tr_idx = list(map(int, train_set.indices))
-    else: tr_idx = list(range(len(train_set)))
-    te_idx = list(range(len(test_set)))
-    overlap = len(set(tr_idx).intersection(set(te_idx)))
+    # 仅当 train/test 明确来自同一底层对象时才检查索引交集；否则认为 0
+    def _unwrap(ds):
+        base = ds
+        while isinstance(base, Subset):
+            base = base.dataset
+        return base
+    bt = _unwrap(train_set)
+    be = _unwrap(test_set)
+    same_underlying = (getattr(bt, 'base', bt) is getattr(be, 'base', be))
+    if same_underlying and isinstance(train_set, Subset) and isinstance(test_set, Subset):
+        tr_idx = set(map(int, train_set.indices))
+        te_idx = set(map(int, test_set.indices))
+        overlap = len(tr_idx & te_idx)
+    else:
+        overlap = 0
     print(f"[sanity] train/test index overlap = {overlap} (should be 0)")
+
     # color-only baseline on test
     labels = []; colors=[]
     base_te = _unwrap_colored_dataset(test_set)
+    # 注意：此处统计的是“测试集颜色与标签的一致率”，理论上应接近 p_test
     for i in range(len(test_set)):
         if isinstance(test_set, Subset):
             bi = int(test_set.indices[i])
@@ -779,16 +801,15 @@ def sanity_prints(train_set, test_set):
     labels = np.array(labels); colors = np.array(colors)
     color_only_acc = float(np.mean(labels==colors))
     print(f"[sanity] color-only baseline acc on test = {color_only_acc:.3f}")
+
     # group counts
     counts={}
     for i in range(len(test_set)):
-        if isinstance(test_set, Subset):
-            bi = int(test_set.indices[i])
-        else:
-            bi = i
+        bi = int(test_set.indices[i]) if isinstance(test_set, Subset) else i
         y = int(base_te.labels[bi]); c = int(base_te.colors[bi])
         counts[(y,c)] = counts.get((y,c),0)+1
     print(f"[test group counts] {counts}")
+
 
 # -----------------------
 # Logging & Plotting
