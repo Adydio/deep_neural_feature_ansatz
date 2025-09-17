@@ -220,63 +220,69 @@ class AGOPSpectralSelector:
         self.alpha = alpha
         self.device = device
 
+        # 固定随机投影矩阵
         self.R = torch.randn(self.V, self.m, device=device) / math.sqrt(self.m)
+        # 输出梯度草图的EMA协方差
         self.S = torch.zeros(self.m, self.m, device=device)
+        # 初始top-k子空间
         self.U = torch.eye(self.m, self.k, device=device)
         self.eigs = torch.ones(self.k, device=device)
 
     @torch.no_grad()
     def _update_spectrum(self, phi_batch: torch.Tensor):
+        # phi_batch: [B_c, m]
         C = (phi_batch.T @ phi_batch) / max(1, phi_batch.size(0))
         self.S = self.beta * self.S + (1 - self.beta) * C
-        evals, evecs = torch.linalg.eigh(self.S)
+        evals, evecs = torch.linalg.eigh(self.S)  # 升序
         topk = torch.argsort(evals, descending=True)[:self.k]
         self.eigs = evals[topk]
         self.U = _orthonormalize(evecs[:, topk])
 
     @torch.no_grad()
     def project_logits_grad(self, logits: torch.Tensor, targets: torch.Tensor, topk: Optional[int]=None):
+        # Tiny Shakespeare 词表小，直接走全软max
         Bc, T, V = logits.shape
         assert V == self.V
-        # For tiny Shakespeare, V is small, use full softmax
-        p = F.softmax(logits, dim=-1)  # [B_c, T, V]
-        pR = torch.matmul(p, self.R)   # [B_c, T, m]
-        Rt = self.R[targets]           # [B_c, T, m]
-        phi = (pR - Rt).sum(dim=1)     # [B_c, m]
+        p = F.softmax(logits, dim=-1)      # [B_c, T, V]
+        pR = torch.matmul(p, self.R)       # [B_c, T, m]
+        Rt = self.R[targets]               # [B_c, T, m]
+        phi = (pR - Rt).sum(dim=1)         # [B_c, m]
         return phi
 
-@torch.no_grad()
-def score(self, phi: torch.Tensor, loss_per_seq: torch.Tensor=None, gamma: float=0.0):
-    """
-    phi: [B_c, m]
-    loss_per_seq: [B_c], optional hardness weighting
-    gamma: exponent for loss weighting (0 => no weight)
-    Returns: scores [B_c], alignment a, novelty n, w (float), c (float)
-    """
-    # alignment / novelty
-    proj = phi @ self.U                # [B_c, k]
-    num = (proj ** 2).sum(dim=1)       # ||U^T phi||^2
-    den = (phi ** 2).sum(dim=1).clamp_min(1e-12)
-    a = (num / den).clamp(0, 1)
-    n = 1.0 - a
+    @torch.no_grad()
+    def score(self, phi: torch.Tensor, loss_per_seq: torch.Tensor=None, gamma: float=0.0):
+        """
+        返回:
+          s: [B_c]  综合分数
+          a: [B_c]  对齐分数
+          n: [B_c]  新颖分数
+          w: float  对齐权重
+          c: float  谱集中度 (lambda1 / trace)
+        """
+        # 对齐 / 新颖
+        proj = phi @ self.U
+        num = (proj ** 2).sum(dim=1)
+        den = (phi ** 2).sum(dim=1).clamp_min(1e-12)
+        a = (num / den).clamp(0, 1)
+        n = 1.0 - a
 
-    # spectral concentration (全部转成标量 float，避免张量-标量混算)
-    trace = float(torch.trace(self.S).item())
-    lam1 = float(self.eigs[0].item())
-    c = (lam1 / max(trace, 1e-12)) if trace > 0.0 else 0.0
+        # 谱集中度（转为标量float，再走math.exp，避免Tensor-float混算）
+        trace = float(torch.trace(self.S).item())
+        lam1 = float(self.eigs[0].item())
+        c = (lam1 / max(trace, 1e-12)) if trace > 0.0 else 0.0
 
-    # 标量 sigmoid（math 实现）
-    w = 1.0 / (1.0 + math.exp(-self.alpha * (self.c_target - c)))
+        w = 1.0 / (1.0 + math.exp(-self.alpha * (self.c_target - c)))
 
-    # final score
-    s = w * a + (1.0 - w) * n
-    if loss_per_seq is not None and gamma > 0:
-        s = s * (loss_per_seq.detach() ** gamma)
-    return s, a, n, w, c
-
+        s = w * a + (1.0 - w) * n
+        if loss_per_seq is not None and gamma > 0:
+            s = s * (loss_per_seq.detach() ** gamma)
+        return s, a, n, w, c
 
     def step_select(self, model: nn.Module, x_cand: torch.Tensor, y_cand: torch.Tensor,
                     gamma: float=0.0):
+        """
+        给定候选池，返回按分数降序的索引
+        """
         with torch.no_grad():
             logits = model(x_cand)
             loss_tok = F.cross_entropy(logits.view(-1, logits.size(-1)),
@@ -286,9 +292,13 @@ def score(self, phi: torch.Tensor, loss_per_seq: torch.Tensor=None, gamma: float
         phi = self.project_logits_grad(logits, y_cand)
         self._update_spectrum(phi)
         scores, a, n, w, c = self.score(phi, loss_per_seq=loss_seq, gamma=gamma)
+
         order = torch.argsort(scores, descending=True)
-        return order, {"scores":scores, "align":a, "novel":n, "w":w, "c":c,
-                       "loss_seq":loss_seq, "phi":phi}
+        return order, {
+            "scores": scores, "align": a, "novel": n, "w": w, "c": c,
+            "loss_seq": loss_seq, "phi": phi
+        }
+
 
 # ----------------------------- training & evaluation -----------------------------
 
