@@ -245,22 +245,35 @@ class AGOPSpectralSelector:
         phi = (pR - Rt).sum(dim=1)     # [B_c, m]
         return phi
 
-    @torch.no_grad()
-    def score(self, phi: torch.Tensor, loss_per_seq: Optional[torch.Tensor]=None, gamma: float=0.0):
-        proj = phi @ self.U
-        num = (proj ** 2).sum(dim=1)
-        den = (phi ** 2).sum(dim=1) + 1e-12
-        a = (num / den).clamp(0, 1)
-        n = 1.0 - a
+@torch.no_grad()
+def score(self, phi: torch.Tensor, loss_per_seq: torch.Tensor=None, gamma: float=0.0):
+    """
+    phi: [B_c, m]
+    loss_per_seq: [B_c], optional hardness weighting
+    gamma: exponent for loss weighting (0 => no weight)
+    Returns: scores [B_c], alignment a, novelty n, w (float), c (float)
+    """
+    # alignment / novelty
+    proj = phi @ self.U                # [B_c, k]
+    num = (proj ** 2).sum(dim=1)       # ||U^T phi||^2
+    den = (phi ** 2).sum(dim=1).clamp_min(1e-12)
+    a = (num / den).clamp(0, 1)
+    n = 1.0 - a
 
-        trace = torch.trace(self.S) + 1e-12
-        c = float(self.eigs[0] / trace) if trace > 0 else 0.0
-        w = 1.0 / (1.0 + torch.exp(-self.alpha*(self.c_target - c)))
+    # spectral concentration (全部转成标量 float，避免张量-标量混算)
+    trace = float(torch.trace(self.S).item())
+    lam1 = float(self.eigs[0].item())
+    c = (lam1 / max(trace, 1e-12)) if trace > 0.0 else 0.0
 
-        s = w * a + (1 - w) * n
-        if loss_per_seq is not None and gamma > 0:
-            s = s * (loss_per_seq.detach() ** gamma)
-        return s, a, n, w, c
+    # 标量 sigmoid（math 实现）
+    w = 1.0 / (1.0 + math.exp(-self.alpha * (self.c_target - c)))
+
+    # final score
+    s = w * a + (1.0 - w) * n
+    if loss_per_seq is not None and gamma > 0:
+        s = s * (loss_per_seq.detach() ** gamma)
+    return s, a, n, w, c
+
 
     def step_select(self, model: nn.Module, x_cand: torch.Tensor, y_cand: torch.Tensor,
                     gamma: float=0.0):
@@ -355,26 +368,68 @@ def train_one_method(method: str,
                                            y_cand.view(-1), reduction='none')
                 loss_seq = loss_tok.view(args.candidate_batch, args.block_size).mean(dim=1)
             if method == "loss_curriculum":
-                order = torch.argsort(loss_seq, descending=False) # easy first
-                select_idx = order[:args.batch_size]
+                # 先计算 loss_seq
+                with torch.no_grad():
+                    logits = model(x_cand)
+                    loss_tok = F.cross_entropy(logits.view(-1, logits.size(-1)),
+                                            y_cand.view(-1), reduction='none')
+                    loss_seq = loss_tok.view(args.candidate_batch, args.block_size).mean(dim=1)
+
+                # Baby-steps: 随训练推移扩大允许的难度上限分位
+                frac = min(1.0, step / max(1, int(0.7 * args.steps)))   # 0 -> 1 over 70% of training
+                pct = 0.3 + 0.6 * frac                                  # 30% -> 90% 分位
+                kth = max(1, int(math.floor(pct * args.candidate_batch)))
+                thresh = torch.kthvalue(loss_seq, k=kth).values
+
+                # 允许集合：loss 在 [最小, 阈值] 之间的样本
+                eligible = torch.nonzero(loss_seq <= thresh, as_tuple=False).view(-1)
+
+                # 在允许集合内随机挑选一部分；剩余名额完全随机补齐（多样性保底）
+                num_rand = int(args.batch_size * args.baseline_rand_frac)  # 例如 0.25
+                num_pick = args.batch_size - num_rand
+                if eligible.numel() >= num_pick:
+                    pick = eligible[torch.randperm(eligible.numel(), device=device)[:num_pick]]
+                else:
+                    pick = eligible
+
+                # 其余名额均匀随机（避免一整批都是“易样本”）
+                rest = torch.randperm(args.candidate_batch, device=device)
+                # 去重
+                if pick.numel() > 0:
+                    mask = ~torch.isin(rest, pick)
+                    rest = rest[mask]
+                select_idx = torch.cat([pick, rest[:max(0, args.batch_size - pick.numel())]])
+
             elif method == "anti_curriculum":
                 order = torch.argsort(loss_seq, descending=True) # hard first
                 select_idx = order[:args.batch_size]
             else:  # self_paced
-                # linear schedule on percentile
+                with torch.no_grad():
+                    logits = model(x_cand)
+                    loss_tok = F.cross_entropy(logits.view(-1, logits.size(-1)),
+                                            y_cand.view(-1), reduction='none')
+                    loss_seq = loss_tok.view(args.candidate_batch, args.block_size).mean(dim=1)
+                # 线性放宽分位阈值
                 p0, p1 = 0.2, 0.9
                 frac = min(1.0, step / max(1, int(0.6 * args.steps)))
                 pct = p0 * (1 - frac) + p1 * frac
                 kth = int(max(1, math.floor(pct * args.candidate_batch)))
-                thresh = torch.kthvalue(loss_seq, k=kth).values.item()
-                mask = loss_seq <= thresh
-                idx = torch.nonzero(mask, as_tuple=False).view(-1)
-                if idx.numel() >= args.batch_size:
-                    select_idx = idx[:args.batch_size]
+                thresh = torch.kthvalue(loss_seq, k=kth).values
+
+                eligible = torch.nonzero(loss_seq <= thresh, as_tuple=False).view(-1)
+
+                num_rand = int(args.batch_size * args.baseline_rand_frac)
+                num_pick = args.batch_size - num_rand
+                if eligible.numel() >= num_pick:
+                    pick = eligible[torch.randperm(eligible.numel(), device=device)[:num_pick]]
                 else:
-                    # pad with easiest
-                    order = torch.argsort(loss_seq, descending=False)
-                    select_idx = order[:args.batch_size]
+                    pick = eligible
+
+                rest = torch.randperm(args.candidate_batch, device=device)
+                if pick.numel() > 0:
+                    mask = ~torch.isin(rest, pick)
+                    rest = rest[mask]
+                select_idx = torch.cat([pick, rest[:max(0, args.batch_size - pick.numel())]])
 
         elif method == "agop_sc":
             order, info = selector.step_select(model, x_cand, y_cand, gamma=args.gamma)
@@ -401,10 +456,10 @@ def train_one_method(method: str,
             if method == "agop_sc":
                 # record spectral concentration and weight
                 trace = float(torch.trace(selector.S).item())
-                c = float(selector.eigs[0].item() / max(trace, 1e-12)) if trace>0 else 0.0
-                # compute w for logging (use last step value)
-                align_w = 1.0 / (1.0 + math.exp(-selector.alpha*(selector.c_target - c)))
+                c = (float(selector.eigs[0].item()) / max(trace, 1e-12)) if trace > 0.0 else 0.0
+                align_w = 1.0 / (1.0 + math.exp(-selector.alpha * (selector.c_target - c)))
                 spec_c = c
+
 
             with open(log_path, "a") as f:
                 f.write(f"{step},{loss.item():.6f},{val_loss:.6f},{val_ppl:.6f},{lr:.6g},{spec_c},{align_w}\n")
@@ -543,6 +598,8 @@ def main():
     parser.add_argument("--candidate_batch", type=int, default=128)
     parser.add_argument("--method", type=str, default="agop_sc",
                         choices=["agop_sc", "random", "loss_curriculum", "self_paced", "anti_curriculum", "all"])
+    parser.add_argument("--baseline_rand_frac", type=float, default=0.25,
+                    help="fraction of batch chosen uniformly at random for baselines to preserve diversity")
 
     # AGOP-SC selector hyperparams
     parser.add_argument("--m", type=int, default=64)
