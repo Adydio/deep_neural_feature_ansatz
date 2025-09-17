@@ -196,7 +196,7 @@ def get_dataset_info(dataset_name):
         'pol': {
             'num_classes': 2,
             'loader_func': dataset.get_pol,
-            'input_size': 27,  # Political voting features
+            'input_size': 48,  # Political voting features (corrected from 27 to 48)
             'channels': 1,     # Not applicable for tabular
             'loss_ylim': (0, 0.2),  # Binary classification
             'type': 'tabular'
@@ -204,7 +204,7 @@ def get_dataset_info(dataset_name):
         'house_16H': {
             'num_classes': 2,
             'loader_func': dataset.get_house_16H,
-            'input_size': 17,  # House pricing features
+            'input_size': 16,  # House pricing features (corrected from 17 to 16)
             'channels': 1,     # Not applicable for tabular
             'loss_ylim': (0, 0.2),  # Binary classification
             'type': 'tabular'
@@ -560,7 +560,8 @@ def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max
         net = torch.compile(net, mode='reduce-overhead')
     
     criterion = torch.nn.MSELoss()
-    scaler = torch.cuda.amp.GradScaler() if device.type == 'cuda' else None
+    # Use updated amp.GradScaler syntax
+    scaler = torch.amp.GradScaler('cuda') if device.type == 'cuda' else None
     
     # Save initial model before training starts (for remove_init operation)
     net.cpu()
