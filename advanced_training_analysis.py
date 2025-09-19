@@ -443,7 +443,7 @@ def compute_agop_nfm_correlation(model_path, layer_indices, max_samples=None, in
     
     return correlations
 
-def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max_samples=None, weight_decay=0, dataset_name='svhn', correlation_type='cosine'):
+def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max_samples=None, weight_decay=0, dataset_name='svhn', correlation_type='cosine', init_strategy='original'):
     """
     Train model with comprehensive analysis
     
@@ -455,6 +455,7 @@ def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max
         max_samples: limit samples for AGOP computation (memory management)
         dataset_name: dataset to use for training
         correlation_type: 'cosine' or 'pearson' - method for computing AGOP correlation
+        init_strategy: 'original' or 'default' - initialization strategy
     """
     
     print(f"\n=== Starting Training with {optimizer_name.upper()} on {dataset_name.upper()} ===")
@@ -530,7 +531,7 @@ def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max
         'depth': 5,
         'act': 'relu',
         'val_interval': val_interval,
-        'init_strategy': 'original',  # Track initialization strategy
+        'init_strategy': init_strategy,  # Track initialization strategy
         'correlation_type': correlation_type  # Track correlation method
     }
     
@@ -544,9 +545,19 @@ def train_with_analysis(optimizer_name, lr, num_epochs=500, val_interval=20, max
                           num_classes=dataset_info['num_classes'],
                           act_name=configs['act'])
     
-    # Initialize weights using original paper's exact strategy
+    # Initialize weights using selected strategy
     print(f"\n=== Initializing Network Weights ===")
-    initialize_all_layer_weights(net, configs['depth'], init_value=1e-4, use_original_strategy=True)
+    if init_strategy == 'original':
+        initialize_all_layer_weights(net, configs['depth'], init_value=1e-4, use_original_strategy=True)
+    else:  # 'default'
+        print("Using PyTorch default initialization for all layers")
+        # For default strategy, we don't call initialize_all_layer_weights
+        # PyTorch already initializes weights with default strategy
+        for idx, param in enumerate(net.parameters()):
+            if param.dim() == 2:  # Only Linear layer weights
+                print(f"Layer {idx} (default): mean={param.mean().item():.8f}, "
+                      f"std={param.std().item():.8f}, shape={param.shape}")
+        print(f"Total layers: {sum(1 for p in net.parameters() if p.dim() == 2)} all default")
     
     # Get device and setup
     device = trainer.get_best_device()
@@ -697,7 +708,7 @@ def generate_plots(results, exp_dir, optimizer_name, dataset_name='svhn', config
         else:
             lr_str = f"lr{lr}"
         
-        base_filename = f"{dataset_name}_{optimizer_name}_{lr_str}_{wd_str}_ep{epochs}_int{val_interval}_w{width}_d{depth}_{act}_original_init"
+        base_filename = f"{dataset_name}_{optimizer_name}_{lr_str}_{wd_str}_ep{epochs}_int{val_interval}_w{width}_d{depth}_{act}_{configs.get('init_strategy', 'original')}_init"
     else:
         base_filename = f"{dataset_name}_{optimizer_name}_default_params"
     
@@ -710,9 +721,11 @@ def generate_plots(results, exp_dir, optimizer_name, dataset_name='svhn', config
     
     # Create detailed title with parameters
     if configs:
+        init_strategy = configs.get('init_strategy', 'original')
+        init_desc = "L0:1e-4*Normal, L1+:Default" if init_strategy == 'original' else "All:Default"
         title = (f'{optimizer_name.upper()} Training Analysis: {dataset_name.upper()}\n'
                 f'LR={lr}, WD={weight_decay}, Epochs={epochs}, Interval={val_interval}, '
-                f'Arch=[{width}×{depth}], Act={act}, Init=Original(L0:1e-4*Normal, L1+:Default)')
+                f'Arch=[{width}×{depth}], Act={act}, Init={init_strategy.capitalize()}({init_desc})')
     else:
         title = f'{optimizer_name.upper()} Training Analysis: Loss and AGOP/NFM Correlation'
     
@@ -797,8 +810,10 @@ def generate_plots(results, exp_dir, optimizer_name, dataset_name='svhn', config
         
         # Detailed title for individual layer plots
         if configs:
+            init_strategy = configs.get('init_strategy', 'original')
+            init_desc = "L0:1e-4*Normal, L1+:Default" if init_strategy == 'original' else "All:Default"
             layer_title = (f'{optimizer_name.upper()} Layer {layer_idx} - {dataset_name.upper()}\n'
-                          f'LR={lr}, WD={weight_decay}, Epochs={epochs}, Init=Original(L0:1e-4*Normal, L1+:Default)')
+                          f'LR={lr}, WD={weight_decay}, Epochs={epochs}, Init={init_strategy.capitalize()}({init_desc})')
         else:
             layer_title = f'{optimizer_name.upper()} - Layer {layer_idx} Analysis'
         
@@ -847,6 +862,9 @@ def main():
     parser.add_argument('--correlation_type', type=str, default='cosine',
                         choices=['cosine', 'pearson'],
                         help='Correlation type for AGOP-NFM analysis (default: cosine)')
+    parser.add_argument('--init', type=str, default='original',
+                        choices=['original', 'default'],
+                        help='Initialization strategy: "original" (L0:1e-4*Normal, L1+:Default) or "default" (all layers use PyTorch default) (default: original)')
     
     args = parser.parse_args()
     
@@ -865,7 +883,8 @@ def main():
         max_samples=args.max_samples,
         weight_decay=args.weight_decay,
         dataset_name=args.dataset,
-        correlation_type=args.correlation_type
+        correlation_type=args.correlation_type,
+        init_strategy=args.init
     )
     
     print(f"\n=== Experiment Complete ===")
